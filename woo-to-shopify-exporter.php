@@ -25,4 +25,7 @@ if ( ! defined( 'WSE_PLUGIN_URL' ) ) {
     define( 'WSE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 }
 
+require_once WSE_PLUGIN_PATH . 'includes/data-query.php';
+require_once WSE_PLUGIN_PATH . 'includes/csv-generator.php';
+require_once WSE_PLUGIN_PATH . 'includes/export-handler.php';
 require_once WSE_PLUGIN_PATH . 'admin/menu.php';
