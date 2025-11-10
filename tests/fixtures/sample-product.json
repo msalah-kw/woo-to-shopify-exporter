@@ -1,0 +1,306 @@
+{
+  "product_data": {
+    "id": 1,
+    "handle": "arabic-shirt",
+    "name": "قميص قطني رجالي",
+    "description_html": "<p>نص عربي <strong>مشوق</strong></p>",
+    "short_description": "خامة ناعمة ومقاسات متعددة.",
+    "brand": {
+      "id": 5,
+      "name": "دار الأزياء",
+      "slug": "fashion-house"
+    },
+    "categories": [
+      {
+        "id": 11,
+        "name": "قمصان",
+        "slug": "shirts",
+        "parent": 10,
+        "ancestors": [10]
+      }
+    ],
+    "tags": [
+      { "name": "رجالي" },
+      { "name": "صيف" }
+    ],
+    "status": "publish",
+    "type": "variable",
+    "seo": {
+      "title": "قميص قطني رجالي | دار الأزياء",
+      "description": "خامة ناعمة ومقاسات متعددة."
+    },
+    "extra_tags": ["Limited Edition"],
+    "attributes": [
+      {
+        "name": "نوع المنتج",
+        "slug": "نوع-المنتج",
+        "options": ["قميص"],
+        "variation": false
+      },
+      {
+        "name": "pa_color",
+        "slug": "pa_color",
+        "options": ["أحمر", "أزرق"],
+        "variation": true
+      },
+      {
+        "name": "pa_size",
+        "slug": "pa_size",
+        "options": ["صغير", "متوسط"],
+        "variation": true
+      }
+    ]
+  },
+  "variation_meta": [
+    {
+      "id": 501,
+      "parent_id": 1,
+      "pricing": {
+        "price": "120.00",
+        "regular_price": "150.00",
+        "sale_price": "120.00"
+      },
+      "inventory": {
+        "stock_quantity": 25,
+        "manage_stock": true,
+        "sku": "AR-SHIRT-RED-M",
+        "backorders": "no",
+        "barcode": "1234567890123"
+      },
+      "shipping": {
+        "weight": "0.5"
+      },
+      "requires_shipping": true,
+      "taxes": {
+        "status": "taxable",
+        "enabled": true
+      },
+      "attributes": [
+        {
+          "name": "اللون",
+          "slug": "attribute_pa_color",
+          "value": "أحمر",
+          "value_slug": "ahmar"
+        },
+        {
+          "name": "المقاس",
+          "slug": "attribute_pa_size",
+          "value": "متوسط",
+          "value_slug": "medium"
+        }
+      ]
+    },
+    {
+      "id": 502,
+      "parent_id": 1,
+      "pricing": {
+        "price": "130.00",
+        "regular_price": "130.00",
+        "sale_price": ""
+      },
+      "inventory": {
+        "stock_quantity": 15,
+        "manage_stock": true,
+        "sku": "AR-SHIRT-BLUE-S",
+        "backorders": "notify",
+        "barcode": "2234567890123"
+      },
+      "shipping": {
+        "weight": "0.45"
+      },
+      "requires_shipping": true,
+      "taxes": {
+        "status": "taxable",
+        "enabled": true
+      },
+      "attributes": [
+        {
+          "name": "اللون",
+          "slug": "attribute_pa_color",
+          "value": "أزرق",
+          "value_slug": "blue"
+        },
+        {
+          "name": "المقاس",
+          "slug": "attribute_pa_size",
+          "value": "صغير",
+          "value_slug": "small"
+        }
+      ]
+    }
+  ],
+  "option_definitions": [
+    { "slug": "attribute_pa_color", "name": "Color" },
+    { "slug": "attribute_pa_size", "name": "Size" }
+  ],
+  "expected": {
+    "shopify_product": {
+      "Handle": "arabic-shirt",
+      "Title": "قميص قطني رجالي",
+      "Body (HTML)": "<p>نص عربي <strong>مشوق</strong></p>",
+      "Vendor": "دار الأزياء",
+      "Product Category": "ملابس > قمصان",
+      "Type": "قميص",
+      "Tags": "رجالي, صيف, Limited Edition",
+      "Published": "TRUE",
+      "Status": "active",
+      "SEO Title": "قميص قطني رجالي | دار الأزياء",
+      "SEO Description": "خامة ناعمة ومقاسات متعددة."
+    },
+    "flattened_variations": [
+      {
+        "id": 501,
+        "parent_id": 1,
+        "pricing": {
+          "price": "120.00",
+          "regular_price": "150.00",
+          "sale_price": "120.00"
+        },
+        "inventory": {
+          "stock_quantity": 25,
+          "manage_stock": true,
+          "sku": "AR-SHIRT-RED-M",
+          "backorders": "no",
+          "barcode": "1234567890123"
+        },
+        "shipping": {
+          "weight": "0.5"
+        },
+        "requires_shipping": true,
+        "taxes": {
+          "status": "taxable",
+          "enabled": true
+        },
+        "attributes": [
+          {
+            "name": "اللون",
+            "slug": "attribute_pa_color",
+            "value": "أحمر",
+            "value_slug": "ahmar"
+          },
+          {
+            "name": "المقاس",
+            "slug": "attribute_pa_size",
+            "value": "متوسط",
+            "value_slug": "medium"
+          }
+        ]
+      },
+      {
+        "id": 502,
+        "parent_id": 1,
+        "pricing": {
+          "price": "130.00",
+          "regular_price": "130.00",
+          "sale_price": ""
+        },
+        "inventory": {
+          "stock_quantity": 15,
+          "manage_stock": true,
+          "sku": "AR-SHIRT-BLUE-S",
+          "backorders": "notify",
+          "barcode": "2234567890123"
+        },
+        "shipping": {
+          "weight": "0.45"
+        },
+        "requires_shipping": true,
+        "taxes": {
+          "status": "taxable",
+          "enabled": true
+        },
+        "attributes": [
+          {
+            "name": "اللون",
+            "slug": "attribute_pa_color",
+            "value": "أزرق",
+            "value_slug": "blue"
+          },
+          {
+            "name": "المقاس",
+            "slug": "attribute_pa_size",
+            "value": "صغير",
+            "value_slug": "small"
+          }
+        ]
+      }
+    ],
+    "writer_package": {
+      "product": {
+        "Handle": "arabic-shirt",
+        "Title": "قميص قطني رجالي",
+        "Body (HTML)": "<p>نص عربي <strong>مشوق</strong></p>",
+        "Vendor": "دار الأزياء",
+        "Product Category": "ملابس > قمصان",
+        "Type": "قميص",
+        "Tags": "رجالي, صيف, Limited Edition",
+        "Published": "TRUE",
+        "Status": "active",
+        "SEO Title": "قميص قطني رجالي | دار الأزياء",
+        "SEO Description": "خامة ناعمة ومقاسات متعددة.",
+        "Handle Conflict Resolution": ""
+      },
+      "variants": [
+        {
+          "Handle": "arabic-shirt",
+          "Option1 Name": "Color",
+          "Option1 Value": "أحمر",
+          "Option2 Name": "Size",
+          "Option2 Value": "متوسط",
+          "Variant SKU": "AR-SHIRT-RED-M",
+          "Variant Price": "120.00",
+          "Compare At Price": "150.00",
+          "Variant Inventory Qty": 25,
+          "Inventory Policy": "deny",
+          "Inventory Tracker": "shopify",
+          "Variant Barcode": "1234567890123",
+          "Variant Weight": "0.5",
+          "Variant Weight Unit": "kg",
+          "Variant Requires Shipping": "TRUE",
+          "Variant Taxable": "TRUE",
+          "Variant Tax Code": "",
+          "Variant Fulfillment Service": "manual"
+        },
+        {
+          "Handle": "arabic-shirt",
+          "Option1 Name": "Color",
+          "Option1 Value": "أزرق",
+          "Option2 Name": "Size",
+          "Option2 Value": "صغير",
+          "Variant SKU": "AR-SHIRT-BLUE-S",
+          "Variant Price": "130.00",
+          "Compare At Price": "",
+          "Variant Inventory Qty": 15,
+          "Inventory Policy": "continue",
+          "Inventory Tracker": "shopify",
+          "Variant Barcode": "2234567890123",
+          "Variant Weight": "0.45",
+          "Variant Weight Unit": "kg",
+          "Variant Requires Shipping": "TRUE",
+          "Variant Taxable": "TRUE",
+          "Variant Tax Code": "",
+          "Variant Fulfillment Service": "manual"
+        }
+      ],
+      "images": [
+        {
+          "Handle": "arabic-shirt",
+          "Image Src": "https://example.com/images/arabic-shirt-main.jpg",
+          "Image Position": 1,
+          "Image Alt Text": "قميص قطني رجالي"
+        },
+        {
+          "Handle": "arabic-shirt",
+          "Image Src": "https://example.com/images/arabic-shirt-alt.jpg",
+          "Image Position": 2,
+          "Image Alt Text": "تفاصيل الأزرار"
+        }
+      ],
+      "meta": {
+        "product": {
+          "type": "variable"
+        }
+      }
+    }
+  }
+}
