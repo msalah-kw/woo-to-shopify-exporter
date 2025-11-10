@@ -366,6 +366,20 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
         protected $lock_acquired = false;
 
         /**
+         * Export output directory information (path + URL).
+         *
+         * @var array
+         */
+        protected $output_directory = array();
+
+        /**
+         * Delimiter used for generated CSV files.
+         *
+         * @var string
+         */
+        protected $file_delimiter = ',';
+
+        /**
          * Constructor.
          *
          * @param array $job  Job payload containing at minimum an id and settings.
@@ -596,6 +610,56 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
         }
 
         /**
+         * Generates optional manifest files requested in the export settings.
+         *
+         * @return array|WP_Error
+         */
+        protected function generate_additional_manifests() {
+            $files = array();
+
+            if ( empty( $this->output_directory['path'] ) || ! is_array( $this->output_directory ) ) {
+                return $files;
+            }
+
+            $directory = array(
+                'path' => $this->output_directory['path'],
+                'url'  => isset( $this->output_directory['url'] ) ? $this->output_directory['url'] : '',
+            );
+
+            $delimiter = $this->file_delimiter;
+
+            if ( '' === $delimiter ) {
+                $delimiter = ',';
+            }
+
+            if ( ! empty( $this->settings['include_collections'] ) && function_exists( 'wse_generate_collections_manifest' ) ) {
+                $collections = wse_generate_collections_manifest( $this->scope, $directory, $delimiter );
+
+                if ( is_wp_error( $collections ) ) {
+                    return $collections;
+                }
+
+                if ( ! empty( $collections ) ) {
+                    $files[] = $collections;
+                }
+            }
+
+            if ( ! empty( $this->settings['include_redirects'] ) && function_exists( 'wse_generate_redirects_manifest' ) ) {
+                $redirects = wse_generate_redirects_manifest( $this->scope, $directory, $delimiter );
+
+                if ( is_wp_error( $redirects ) ) {
+                    return $redirects;
+                }
+
+                if ( ! empty( $redirects ) ) {
+                    $files[] = $redirects;
+                }
+            }
+
+            return $files;
+        }
+
+        /**
          * Writes a single product package to the streaming writer.
          *
          * @param array $package Product package.
@@ -681,7 +745,18 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
                 return $this->fail_job( $error );
             }
 
-            $files = $this->writer->get_files();
+            $files       = $this->writer->get_files();
+            $additional  = $this->generate_additional_manifests();
+
+            if ( is_wp_error( $additional ) ) {
+                return $this->fail_job( $additional );
+            }
+
+            if ( ! empty( $additional ) ) {
+                $files = array_merge( $files, $additional );
+            }
+
+            $files = array_values( $files );
             $count = count( $files );
 
             $this->job['files']        = $files;
@@ -805,6 +880,12 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
                 $delimiter = ',';
             }
 
+            $this->output_directory = array(
+                'path' => isset( $directory['path'] ) ? $directory['path'] : '',
+                'url'  => isset( $directory['url'] ) ? $directory['url'] : '',
+            );
+            $this->file_delimiter   = $delimiter;
+
             $writer_args = array(
                 'delimiter'         => $delimiter,
                 'output_dir'        => $directory['path'],
@@ -818,6 +899,12 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
             if ( ! empty( $this->writer_overrides ) ) {
                 $writer_args = array_merge( $writer_args, $this->writer_overrides );
             }
+
+            $this->output_directory = array(
+                'path' => isset( $writer_args['output_dir'] ) ? $writer_args['output_dir'] : $this->output_directory['path'],
+                'url'  => isset( $writer_args['base_url'] ) ? $writer_args['base_url'] : $this->output_directory['url'],
+            );
+            $this->file_delimiter   = isset( $writer_args['delimiter'] ) && '' !== $writer_args['delimiter'] ? $writer_args['delimiter'] : $this->file_delimiter;
 
             $this->writer = new WSE_Shopify_CSV_Writer( $writer_args );
 
