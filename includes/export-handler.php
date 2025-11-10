@@ -246,6 +246,30 @@ if ( ! function_exists( 'wse_run_export_job' ) ) {
                 $writer_overrides['max_file_size'] = (int) $job['overrides']['max_file_size'];
             }
 
+            $string_keys = array( 'output_dir', 'base_url', 'file_name', 'delimiter', 'enclosure', 'escape_char' );
+
+            foreach ( $string_keys as $key ) {
+                if ( isset( $job['overrides'][ $key ] ) ) {
+                    $writer_overrides[ $key ] = (string) $job['overrides'][ $key ];
+                }
+            }
+
+            $boolean_keys = array( 'include_variants', 'include_images', 'include_inventory' );
+
+            foreach ( $boolean_keys as $key ) {
+                if ( isset( $job['overrides'][ $key ] ) ) {
+                    $writer_overrides[ $key ] = (bool) $job['overrides'][ $key ];
+                }
+            }
+
+            if ( isset( $writer_overrides['output_dir'] ) ) {
+                $writer_overrides['output_dir'] = wp_normalize_path( $writer_overrides['output_dir'] );
+            }
+
+            if ( isset( $job['overrides']['columns'] ) && is_array( $job['overrides']['columns'] ) ) {
+                $writer_overrides['columns'] = array_values( $job['overrides']['columns'] );
+            }
+
             if ( ! empty( $writer_overrides ) ) {
                 $orchestrator_args['writer'] = $writer_overrides;
             }

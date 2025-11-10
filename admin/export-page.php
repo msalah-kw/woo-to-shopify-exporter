@@ -382,6 +382,7 @@ function wse_get_default_export_settings() {
         'export_scope'       => 'all',
         'scope_categories'   => array(),
         'scope_tags'         => array(),
+        'scope_ids'          => array(),
         'scope_status'       => array( 'publish' ),
         'field_preset'       => 'shopify-default',
         'custom_fields'      => '',
@@ -446,6 +447,18 @@ function wse_sanitize_export_settings( array $source ) {
     $sanitized['scope_tags'] = array();
     if ( ! empty( $source['scope_tags'] ) && is_array( $source['scope_tags'] ) ) {
         $sanitized['scope_tags'] = array_map( 'absint', $source['scope_tags'] );
+    }
+
+    $sanitized['scope_ids'] = array();
+    if ( ! empty( $source['scope_ids'] ) ) {
+        if ( is_array( $source['scope_ids'] ) ) {
+            $sanitized['scope_ids'] = array_map( 'absint', $source['scope_ids'] );
+        } else {
+            $ids = array_map( 'trim', explode( ',', (string) $source['scope_ids'] ) );
+            $sanitized['scope_ids'] = array_map( 'absint', $ids );
+        }
+
+        $sanitized['scope_ids'] = array_values( array_filter( $sanitized['scope_ids'] ) );
     }
 
     $sanitized['scope_status'] = array();

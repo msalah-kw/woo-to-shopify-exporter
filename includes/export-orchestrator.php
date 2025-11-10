@@ -375,11 +375,23 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
             $this->job = $job;
 
             if ( isset( $args['watchdog_time'] ) ) {
-                $this->time_limit = max( 5, (int) $args['watchdog_time'] );
+                $time_limit = (int) $args['watchdog_time'];
+
+                if ( $time_limit <= 0 ) {
+                    $this->time_limit = 0;
+                } else {
+                    $this->time_limit = max( 5, $time_limit );
+                }
             }
 
             if ( isset( $args['watchdog_memory'] ) ) {
-                $this->memory_threshold = max( 0.1, min( 0.95, (float) $args['watchdog_memory'] ) );
+                $memory_threshold = (float) $args['watchdog_memory'];
+
+                if ( $memory_threshold <= 0 ) {
+                    $this->memory_threshold = 0;
+                } else {
+                    $this->memory_threshold = max( 0.1, min( 0.95, $memory_threshold ) );
+                }
             }
 
             if ( isset( $args['lock_ttl'] ) ) {

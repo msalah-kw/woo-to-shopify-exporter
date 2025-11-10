@@ -30,3 +30,7 @@ require_once WSE_PLUGIN_PATH . 'includes/csv-generator.php';
 require_once WSE_PLUGIN_PATH . 'includes/export-orchestrator.php';
 require_once WSE_PLUGIN_PATH . 'includes/export-handler.php';
 require_once WSE_PLUGIN_PATH . 'admin/menu.php';
+
+if ( defined( 'WP_CLI' ) && WP_CLI ) {
+    require_once WSE_PLUGIN_PATH . 'includes/wp-cli.php';
+}
