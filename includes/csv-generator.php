@@ -38,6 +38,13 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
         protected $buffer = array();
 
         /**
+         * Previously recorded writer state used for resume support.
+         *
+         * @var array|null
+         */
+        protected $resume_state = null;
+
+        /**
          * Current file resource handle.
          *
          * @var resource|null
@@ -135,10 +142,11 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
                 $args['columns'] = self::get_default_columns();
             }
 
-            $this->options = $args;
-            $this->columns = array_values( apply_filters( 'wse_csv_columns', $this->options['columns'], $this->options ) );
-            $this->buffer  = array();
-            $this->files   = array();
+            $this->options      = $args;
+            $this->columns      = array_values( apply_filters( 'wse_csv_columns', $this->options['columns'], $this->options ) );
+            $this->buffer       = array();
+            $this->files        = array();
+            $this->resume_state = null;
         }
 
         /**
@@ -209,6 +217,76 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
          */
         public function get_files() {
             return array_values( $this->files );
+        }
+
+        /**
+         * Restores a previously persisted writer state to enable resuming exports.
+         *
+         * @param array $state Serialized writer state.
+         *
+         * @return void
+         */
+        public function restore_state( array $state ) {
+            if ( empty( $state ) ) {
+                return;
+            }
+
+            if ( isset( $state['files'] ) && is_array( $state['files'] ) ) {
+                $this->files = $state['files'];
+            }
+
+            if ( isset( $state['total_rows'] ) ) {
+                $this->total_rows = (int) $state['total_rows'];
+            } elseif ( empty( $this->total_rows ) && ! empty( $this->files ) ) {
+                $total = 0;
+
+                foreach ( $this->files as $file ) {
+                    $total += isset( $file['rows'] ) ? (int) $file['rows'] : 0;
+                }
+
+                $this->total_rows = $total;
+            }
+
+            $this->resume_state = array(
+                'file_index'   => isset( $state['file_index'] ) ? max( 0, (int) $state['file_index'] ) : 0,
+                'current_path' => isset( $state['current_path'] ) ? $state['current_path'] : '',
+                'current_url'  => isset( $state['current_url'] ) ? $state['current_url'] : '',
+                'current_rows' => isset( $state['current_rows'] ) ? (int) $state['current_rows'] : 0,
+                'current_size' => isset( $state['current_size'] ) ? (int) $state['current_size'] : 0,
+            );
+
+            if ( $this->resume_state['file_index'] > 0 ) {
+                $this->file_index = (int) $this->resume_state['file_index'];
+            } elseif ( ! empty( $this->files ) ) {
+                $this->file_index = max( array_keys( $this->files ) );
+            }
+        }
+
+        /**
+         * Provides the current writer state for persistence.
+         *
+         * @return array
+         */
+        public function get_state() {
+            return array(
+                'file_index'   => $this->file_index,
+                'current_path' => $this->current_path,
+                'current_url'  => $this->current_url,
+                'current_rows' => $this->current_rows,
+                'current_size' => $this->current_size,
+                'files'        => $this->files,
+                'total_rows'   => $this->total_rows,
+            );
+        }
+
+        /**
+         * Flushes buffered rows and closes handles without finalizing the writer.
+         *
+         * @return void
+         */
+        public function pause() {
+            $this->flush_buffer( true );
+            $this->close_handle();
         }
 
         /**
@@ -457,6 +535,40 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
         protected function ensure_file_handle() {
             if ( $this->file_handle ) {
                 return true;
+            }
+
+            if ( $this->resume_state ) {
+                $state = $this->resume_state;
+                $path  = isset( $state['current_path'] ) ? $state['current_path'] : '';
+
+                if ( $path && file_exists( $path ) && is_writable( $path ) ) {
+                    $handle = fopen( $path, 'ab' );
+
+                    if ( $handle ) {
+                        $this->file_handle  = $handle;
+                        $this->current_path = $path;
+                        $this->current_url  = ! empty( $state['current_url'] ) ? $state['current_url'] : $this->build_file_url( basename( $path ) );
+                        $this->current_rows = isset( $state['current_rows'] ) ? (int) $state['current_rows'] : 0;
+                        $this->current_size = isset( $state['current_size'] ) && $state['current_size'] > 0 ? (int) $state['current_size'] : filesize( $path );
+                        $this->file_index   = isset( $state['file_index'] ) && $state['file_index'] > 0 ? (int) $state['file_index'] : ( ! empty( $this->files ) ? max( array_keys( $this->files ) ) : 1 );
+
+                        if ( empty( $this->files[ $this->file_index ] ) ) {
+                            $this->files[ $this->file_index ] = array(
+                                'path'     => $this->current_path,
+                                'url'      => $this->current_url,
+                                'filename' => basename( $this->current_path ),
+                                'rows'     => $this->current_rows,
+                                'size'     => $this->current_size,
+                            );
+                        }
+
+                        $this->resume_state = null;
+
+                        return true;
+                    }
+                }
+
+                $this->resume_state = null;
             }
 
             if ( ! $this->ensure_output_directory() ) {

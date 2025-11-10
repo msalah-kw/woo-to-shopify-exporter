@@ -225,18 +225,34 @@ if ( ! function_exists( 'wse_run_export_job' ) ) {
             $job['id'] = uniqid( 'wse_job_', true );
         }
 
-        $job['status']       = 'running';
-        $job['message']      = __( 'Export in progress…', 'woo-to-shopify-exporter' );
-        $job['last_updated'] = time();
-        $job['progress']     = 10;
+        $orchestrator_args = array();
 
-        wse_store_active_job( $job );
-
-        if ( function_exists( 'set_time_limit' ) ) {
-            @set_time_limit( 0 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        if ( isset( $job['watchdog_time'] ) ) {
+            $orchestrator_args['watchdog_time'] = (int) $job['watchdog_time'];
         }
 
-        $result = wse_generate_shopify_csv( $job['settings'] );
+        if ( isset( $job['watchdog_memory'] ) ) {
+            $orchestrator_args['watchdog_memory'] = (float) $job['watchdog_memory'];
+        }
+
+        if ( ! empty( $job['overrides'] ) && is_array( $job['overrides'] ) ) {
+            $writer_overrides = array();
+
+            if ( isset( $job['overrides']['batch_size'] ) ) {
+                $writer_overrides['batch_size'] = (int) $job['overrides']['batch_size'];
+            }
+
+            if ( isset( $job['overrides']['max_file_size'] ) ) {
+                $writer_overrides['max_file_size'] = (int) $job['overrides']['max_file_size'];
+            }
+
+            if ( ! empty( $writer_overrides ) ) {
+                $orchestrator_args['writer'] = $writer_overrides;
+            }
+        }
+
+        $orchestrator = new WSE_Export_Orchestrator( $job, $orchestrator_args );
+        $result       = $orchestrator->run();
 
         if ( is_wp_error( $result ) ) {
             $job['status']       = 'failed';
@@ -244,34 +260,17 @@ if ( ! function_exists( 'wse_run_export_job' ) ) {
             $job['message']      = $result->get_error_message();
             $job['last_updated'] = time();
 
-            wse_store_active_job( $job );
+            if ( function_exists( 'wse_store_active_job' ) ) {
+                wse_store_active_job( $job );
+            }
 
             return $result;
         }
 
-        $file_count = ! empty( $result['files'] ) ? count( $result['files'] ) : 0;
-        $products   = isset( $result['products'] ) ? (int) $result['products'] : 0;
+        if ( function_exists( 'wse_store_active_job' ) ) {
+            wse_store_active_job( $result );
+        }
 
-        $job['status']        = 'completed';
-        $job['progress']      = 100;
-        $job['last_updated']  = time();
-        $job['download_url']  = ! empty( $result['files'][0]['url'] ) ? $result['files'][0]['url'] : '';
-        $job['files']         = $result['files'];
-        $job['row_count']     = isset( $result['rows'] ) ? (int) $result['rows'] : 0;
-        $job['product_count'] = $products;
-        $job['message']       = sprintf(
-            _n(
-                'Export completed with %1$d product across %2$d file.',
-                'Export completed with %1$d products across %2$d files.',
-                $products,
-                'woo-to-shopify-exporter'
-            ),
-            $products,
-            max( 1, $file_count )
-        );
-
-        wse_store_active_job( $job );
-
-        return $job;
+        return $result;
     }
 }
