@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<ruleset name="Woo to Shopify Exporter">
+    <description>PHP_CodeSniffer configuration for the Woo to Shopify Exporter plugin.</description>
+    <file>./</file>
+    <exclude-pattern>vendor/</exclude-pattern>
+
+    <arg name="basepath" value="."/>
+    <arg value="p"/>
+
+    <rule ref="WordPress"/>
+</ruleset>
