@@ -146,7 +146,13 @@ function wts_exporter_run_export( $export_args ) {
         wp_die( esc_html__( 'No exportable rows were generated from the selected products.', 'woo-to-shopify-exporter' ) );
     }
 
-    $preview_rows = array_slice( $rows, 0, 5 );
+    $dataset = wts_exporter_build_export_dataset( $rows );
+
+    if ( empty( $dataset['rows'] ) ) {
+        wp_die( esc_html__( 'The export dataset could not be prepared.', 'woo-to-shopify-exporter' ) );
+    }
+
+    $preview_rows = array_slice( $dataset['rows'], 0, 5 );
 
     $message  = '<h1>' . esc_html__( 'Shopify export preview', 'woo-to-shopify-exporter' ) . '</h1>';
     $message .= '<p>';
@@ -158,7 +164,10 @@ function wts_exporter_run_export( $export_args ) {
     );
     $message .= '</p>';
     $message .= '<p>' . esc_html__( 'CSV file generation will be implemented in the next phase.', 'woo-to-shopify-exporter' ) . '</p>';
-    $message .= '<pre>' . esc_html( print_r( $preview_rows, true ) ) . '</pre>';
+    $message .= '<pre>' . esc_html( print_r( array(
+        'header' => $dataset['header'],
+        'rows'   => $preview_rows,
+    ), true ) ) . '</pre>';
 
     wp_die( wp_kses_post( $message ) );
 }
@@ -221,6 +230,36 @@ function wts_exporter_map_products_to_shopify_rows( $products, $export_args ) {
     }
 
     return $rows;
+}
+
+/**
+ * Build the Shopify export dataset with ordered rows and header list.
+ *
+ * @param array<int,array<string,string>> $rows Shopify-formatted associative rows.
+ * @return array{header:array<int,string>,rows:array<int,array<int,string>>}
+ */
+function wts_exporter_build_export_dataset( $rows ) {
+    $header = WTS_EXPORTER_SHOPIFY_COLUMNS;
+    $ordered_rows = array();
+
+    foreach ( $rows as $row ) {
+        if ( ! is_array( $row ) ) {
+            continue;
+        }
+
+        $ordered_row = array();
+
+        foreach ( $header as $column ) {
+            $ordered_row[] = isset( $row[ $column ] ) ? $row[ $column ] : '';
+        }
+
+        $ordered_rows[] = $ordered_row;
+    }
+
+    return array(
+        'header' => $header,
+        'rows'   => $ordered_rows,
+    );
 }
 
 /**
