@@ -108,6 +108,20 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
         protected $last_error = null;
 
         /**
+         * Tracks unique variant signatures to prevent duplicates.
+         *
+         * @var array
+         */
+        protected $variant_signatures = array();
+
+        /**
+         * Collected non-fatal warnings emitted during generation.
+         *
+         * @var array
+         */
+        protected $warnings = array();
+
+        /**
          * Constructor.
          *
          * @param array $args Writer configuration.
@@ -235,6 +249,14 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
                 $this->files = $state['files'];
             }
 
+            if ( isset( $state['variant_signatures'] ) && is_array( $state['variant_signatures'] ) ) {
+                $this->variant_signatures = $state['variant_signatures'];
+            }
+
+            if ( isset( $state['warnings'] ) && is_array( $state['warnings'] ) ) {
+                $this->warnings = $state['warnings'];
+            }
+
             if ( isset( $state['total_rows'] ) ) {
                 $this->total_rows = (int) $state['total_rows'];
             } elseif ( empty( $this->total_rows ) && ! empty( $this->files ) ) {
@@ -276,6 +298,8 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
                 'current_size' => $this->current_size,
                 'files'        => $this->files,
                 'total_rows'   => $this->total_rows,
+                'variant_signatures' => $this->variant_signatures,
+                'warnings'           => $this->warnings,
             );
         }
 
@@ -299,6 +323,15 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
         }
 
         /**
+         * Returns the collected warnings for this writer instance.
+         *
+         * @return array
+         */
+        public function get_warnings() {
+            return $this->warnings;
+        }
+
+        /**
          * Writes a product package (product, variants, images) to the CSV stream.
          *
          * @param array $package Product package returned from the product source.
@@ -307,6 +340,10 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
          */
         public function write_product_package( array $package ) {
             if ( $this->last_error instanceof WP_Error ) {
+                return false;
+            }
+
+            if ( ! $this->validate_package( $package ) ) {
                 return false;
             }
 
@@ -319,6 +356,303 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
             }
 
             return true;
+        }
+
+        /**
+         * Validates the package contents against Shopify constraints prior to writing.
+         *
+         * @param array $package Product package payload.
+         *
+         * @return bool
+         */
+        protected function validate_package( array $package ) {
+            $product  = isset( $package['product'] ) && is_array( $package['product'] ) ? $package['product'] : array();
+            $variants = isset( $package['variants'] ) && is_array( $package['variants'] ) ? $package['variants'] : array();
+
+            if ( empty( $product ) ) {
+                $this->last_error = new WP_Error( 'wse_missing_product_row', __( 'Product data is missing from the export package.', 'woo-to-shopify-exporter' ) );
+                return false;
+            }
+
+            if ( ! $this->validate_product_row( $product ) ) {
+                return false;
+            }
+
+            $handle = isset( $product['Handle'] ) ? (string) $product['Handle'] : '';
+
+            if ( ! $this->validate_variant_rows( $handle, $variants ) ) {
+                return false;
+            }
+
+            return true;
+        }
+
+        /**
+         * Validates the product level row constraints.
+         *
+         * @param array $product Product row.
+         *
+         * @return bool
+         */
+        protected function validate_product_row( array $product ) {
+            $handle = isset( $product['Handle'] ) ? (string) $product['Handle'] : '';
+
+            if ( '' === $handle ) {
+                $this->last_error = new WP_Error( 'wse_missing_handle', __( 'Every product must include a Shopify handle.', 'woo-to-shopify-exporter' ) );
+                return false;
+            }
+
+            $seo_title = isset( $product['SEO Title'] ) ? (string) $product['SEO Title'] : '';
+            $seo_desc  = isset( $product['SEO Description'] ) ? (string) $product['SEO Description'] : '';
+
+            if ( $this->get_string_length( $seo_title ) > 70 ) {
+                $this->last_error = new WP_Error(
+                    'wse_seo_title_too_long',
+                    sprintf(
+                        /* translators: 1: product handle. 2: maximum character length. */
+                        __( 'The SEO title for product handle "%1$s" exceeds %2$d characters.', 'woo-to-shopify-exporter' ),
+                        $handle,
+                        70
+                    )
+                );
+
+                return false;
+            }
+
+            if ( $this->get_string_length( $seo_desc ) > 160 ) {
+                $this->last_error = new WP_Error(
+                    'wse_seo_description_too_long',
+                    sprintf(
+                        /* translators: 1: product handle. 2: maximum character length. */
+                        __( 'The SEO description for product handle "%1$s" exceeds %2$d characters.', 'woo-to-shopify-exporter' ),
+                        $handle,
+                        160
+                    )
+                );
+
+                return false;
+            }
+
+            return true;
+        }
+
+        /**
+         * Validates variant rows and enforces uniqueness.
+         *
+         * @param string $handle   Product handle.
+         * @param array  $variants Variant rows.
+         *
+         * @return bool
+         */
+        protected function validate_variant_rows( $handle, array $variants ) {
+            $variant_rows = array();
+
+            foreach ( $variants as $variant ) {
+                if ( is_array( $variant ) ) {
+                    $variant_rows[] = $variant;
+                }
+            }
+
+            $variant_count = count( $variant_rows );
+
+            if ( $variant_count > 100 ) {
+                $this->add_warning(
+                    'too_many_variants',
+                    sprintf(
+                        /* translators: 1: product handle, 2: variant count. */
+                        __( 'Product handle "%1$s" has %2$d variants. Shopify recommends a maximum of 100 variants per product.', 'woo-to-shopify-exporter' ),
+                        $handle,
+                        $variant_count
+                    ),
+                    array(
+                        'handle' => $handle,
+                        'count'  => $variant_count,
+                    )
+                );
+            }
+
+            $local_signatures = array();
+
+            foreach ( $variant_rows as $index => $variant ) {
+                foreach ( $variant as $column => $value ) {
+                    if ( preg_match( '/^Option(\d+)\s+(Name|Value)$/', $column, $matches ) ) {
+                        $slot = (int) $matches[1];
+
+                        if ( $slot > 3 && '' !== trim( (string) $value ) ) {
+                            $this->last_error = new WP_Error(
+                                'wse_option_limit_exceeded',
+                                sprintf(
+                                    /* translators: 1: product handle. */
+                                    __( 'Product handle "%1$s" defines more than three options, which Shopify does not support.', 'woo-to-shopify-exporter' ),
+                                    $handle
+                                )
+                            );
+
+                            return false;
+                        }
+                    }
+                }
+
+                $price = isset( $variant['Variant Price'] ) ? trim( (string) $variant['Variant Price'] ) : '';
+
+                if ( '' === $price || ! $this->is_numeric_string( $price ) ) {
+                    $this->last_error = new WP_Error(
+                        'wse_variant_price_invalid',
+                        sprintf(
+                            /* translators: 1: product handle, 2: variant index (1-based). */
+                            __( 'Variant %2$d for product handle "%1$s" must have a numeric price.', 'woo-to-shopify-exporter' ),
+                            $handle,
+                            $index + 1
+                        )
+                    );
+
+                    return false;
+                }
+
+                $compare = isset( $variant['Compare At Price'] ) ? trim( (string) $variant['Compare At Price'] ) : '';
+
+                if ( '' !== $compare && ! $this->is_numeric_string( $compare ) ) {
+                    $this->last_error = new WP_Error(
+                        'wse_compare_at_price_invalid',
+                        sprintf(
+                            /* translators: 1: product handle, 2: variant index (1-based). */
+                            __( 'Compare-at price for variant %2$d of product handle "%1$s" must be numeric.', 'woo-to-shopify-exporter' ),
+                            $handle,
+                            $index + 1
+                        )
+                    );
+
+                    return false;
+                }
+
+                $inventory_policy = isset( $variant['Inventory Policy'] ) ? strtolower( trim( (string) $variant['Inventory Policy'] ) ) : '';
+
+                if ( '' !== $inventory_policy && ! in_array( $inventory_policy, array( 'deny', 'continue' ), true ) ) {
+                    $this->last_error = new WP_Error(
+                        'wse_inventory_policy_invalid',
+                        sprintf(
+                            /* translators: 1: product handle, 2: inventory policy value. */
+                            __( 'Inventory policy "%2$s" for product handle "%1$s" is not supported by Shopify.', 'woo-to-shopify-exporter' ),
+                            $handle,
+                            $inventory_policy
+                        )
+                    );
+
+                    return false;
+                }
+
+                $signature = $this->build_variant_signature( $handle, $variant );
+
+                if ( isset( $local_signatures[ $signature ] ) || isset( $this->variant_signatures[ $signature ] ) ) {
+                    $this->last_error = new WP_Error(
+                        'wse_duplicate_variant',
+                        sprintf(
+                            /* translators: 1: product handle. */
+                            __( 'Duplicate variant detected for product handle "%1$s". Handles and option combinations must be unique.', 'woo-to-shopify-exporter' ),
+                            $handle
+                        )
+                    );
+
+                    return false;
+                }
+
+                $local_signatures[ $signature ]      = true;
+                $this->variant_signatures[ $signature ] = true;
+            }
+
+            return true;
+        }
+
+        /**
+         * Adds a warning to the collection and emits a hook for observers.
+         *
+         * @param string $code    Warning identifier.
+         * @param string $message Human readable warning message.
+         * @param array  $data    Additional contextual data.
+         *
+         * @return void
+         */
+        protected function add_warning( $code, $message, array $data = array() ) {
+            $warning = array(
+                'code'    => $code,
+                'message' => $message,
+                'data'    => $data,
+            );
+
+            $this->warnings[] = $warning;
+
+            /**
+             * Fires when the CSV writer records a non-fatal warning.
+             *
+             * @since 1.0.0
+             *
+             * @param array                 $warning Warning payload.
+             * @param WSE_Shopify_CSV_Writer $writer  Current writer instance.
+             */
+            do_action( 'wse_csv_writer_warning', $warning, $this );
+        }
+
+        /**
+         * Builds a signature string for a variant to enforce uniqueness.
+         *
+         * @param string $handle  Product handle.
+         * @param array  $variant Variant row data.
+         *
+         * @return string
+         */
+        protected function build_variant_signature( $handle, array $variant ) {
+            $parts   = array( strtolower( trim( (string) $handle ) ) );
+            $indices = array( 'Option1', 'Option2', 'Option3' );
+
+            foreach ( $indices as $index ) {
+                $name_key  = $index . ' Name';
+                $value_key = $index . ' Value';
+
+                $parts[] = strtolower( trim( isset( $variant[ $name_key ] ) ? (string) $variant[ $name_key ] : '' ) );
+                $parts[] = strtolower( trim( isset( $variant[ $value_key ] ) ? (string) $variant[ $value_key ] : '' ) );
+            }
+
+            $sku = isset( $variant['Variant SKU'] ) ? trim( (string) $variant['Variant SKU'] ) : '';
+
+            if ( '' !== $sku ) {
+                $parts[] = 'sku:' . strtolower( $sku );
+            }
+
+            return implode( '|', $parts );
+        }
+
+        /**
+         * Determines if the provided value represents a numeric string.
+         *
+         * @param string $value Value to inspect.
+         *
+         * @return bool
+         */
+        protected function is_numeric_string( $value ) {
+            if ( '' === $value ) {
+                return false;
+            }
+
+            if ( is_numeric( $value ) ) {
+                return true;
+            }
+
+            return false;
+        }
+
+        /**
+         * Returns the string length using multibyte support when available.
+         *
+         * @param string $value String value.
+         *
+         * @return int
+         */
+        protected function get_string_length( $value ) {
+            if ( function_exists( 'mb_strlen' ) ) {
+                return mb_strlen( $value, 'UTF-8' );
+            }
+
+            return strlen( $value );
         }
 
         /**
@@ -935,6 +1269,7 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
             $value = (string) $value;
             $value = wp_check_invalid_utf8( $value, true );
             $value = str_replace( array( "\r\n", "\r" ), "\n", $value );
+            $value = str_replace( array( '“', '”', '„', '‟', '«', '»' ), chr( 34 ), $value );
 
             return $value;
         }
