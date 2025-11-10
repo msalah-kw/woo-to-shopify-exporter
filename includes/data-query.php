@@ -75,7 +75,7 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
          *
          * @return array
          */
-        protected function build_query_args( array $scope ) {
+        protected function build_query_args( array $scope, $return = 'objects' ) {
             $scope = wp_parse_args(
                 $scope,
                 array(
@@ -103,7 +103,7 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
                 'page'    => $scope['page'],
                 'orderby' => 'ID',
                 'order'   => 'ASC',
-                'return'  => 'objects',
+                'return'  => $return,
                 'type'    => array( 'simple', 'variable', 'variation' ),
             );
 
@@ -136,6 +136,18 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
             }
 
             return apply_filters( 'wse_product_query_args', $args, $scope );
+        }
+
+        /**
+         * Exposes the underlying product query arguments for reuse.
+         *
+         * @param array  $scope  Scope definition.
+         * @param string $return Desired return format for WC_Product_Query.
+         *
+         * @return array
+         */
+        public function get_query_args( array $scope = array(), $return = 'objects' ) {
+            return $this->build_query_args( $scope, $return );
         }
 
         /**
