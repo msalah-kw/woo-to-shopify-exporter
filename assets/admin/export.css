@@ -1,0 +1,48 @@
+.wse-export-page .wse-steps {
+    counter-reset: wse-steps;
+    list-style: none;
+    margin: 2rem 0;
+    padding: 0;
+}
+
+.wse-export-page .wse-step {
+    border: 1px solid #ccd0d4;
+    border-radius: 6px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    background: #fff;
+    position: relative;
+}
+
+.wse-export-page .wse-step::before {
+    counter-increment: wse-steps;
+    content: counter(wse-steps);
+    position: absolute;
+    left: -12px;
+    top: -12px;
+    background: #007cba;
+    color: #fff;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+}
+
+.wse-export-form {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+}
+
+.wse-restart-checkbox {
+    margin: 0;
+    font-weight: 500;
+}
+
+.wse-downloads ul {
+    list-style: disc;
+    margin-left: 1.5rem;
+}

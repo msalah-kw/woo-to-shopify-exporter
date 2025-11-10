@@ -1,66 +1,47 @@
 === Woo to Shopify Exporter ===
-Contributors: BY SALAH
-Tags: woocommerce, export, shopify, migration, csv
-Requires at least: 5.0
-Tested up to: 6.6
-Requires PHP: 7.4
+Contributors: nsb
+Requires at least: 6.0
+Tested up to: 6.4
+Requires PHP: 8.1
+Stable tag: 0.1.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-أداة بسيطة لتصدير منتجات ووكومرس إلى ملف CSV متوافق مع شوبيفاي.
+Export WooCommerce catalogs to Shopify-compatible CSV bundles with resumable jobs, validation, and logging.
 
 == Description ==
 
-هل تحتاج نقل متجرك من ووكومرس إلى شوبيفاي؟
+Woo to Shopify Exporter streams WooCommerce products into a Shopify-ready CSV while keeping memory usage low. It
+normalises pricing, inventory, options, SEO metadata, and images, and enforces Shopify’s limits—warning when a product
+exceeds 100 variants or when required handles are missing. Optional image bundling copies referenced media into the
+export directory so merchants can upload assets alongside the CSV.
 
-هذه الإضافة تقوم بتسهيل أهم خطوة: تصدير المنتجات.
+The plugin provides:
 
-تقوم الإضافة بسحب جميع منتجات ووكومرس (WooCommerce) وتحويلها إلى ملف CSV بالصيغة المعتمدة من شوبيفاي (Shopify)، جاهز للرفع مباشرة.
-
-تم تطوير هذه الإضافة خصيصاً للتعامل مع:
-* المنتجات البسيطة (Simple Products).
-* المنتجات المتغيرة (Variable Products) وخياراتها (مثل الحجم، تركيز النيكوتين، اللون).
-* الأسعار، المخزون، والوصف (Body HTML).
-* الصور الرئيسية وصور الخيارات (Variant Images).
-* مطابقة الأعمدة بناءً على ملف الاستيراد الرسمي من شوبيفاي (مثل `Handle`, `Title`, `Variant SKU`).
+* A four-step admin screen under **WooCommerce → Shopify Export** with capability checks and nonces.
+* Resumable export jobs that persist checkpoints, log progress to `job.log`, and record per-product failures in `failures.json`.
+* Streaming CSV writing without BOM using UTF-8 encoding and Shopify’s column layout.
+* Variant mapping that preserves up to three option columns and rolls overflow attributes into variant titles and tags.
+* Sanitised HTML bodies that remove inline styles as well as `<script>`/`<style>` blocks.
 
 == Installation ==
 
-1.  ارفع مجلد الإضافة `woo-to-shopify-exporter` بالكامل إلى المسار `/wp-content/plugins/`.
-2.  اذهب إلى 'الإضافات' في لوحة تحكم ووردبريس.
-3.  ابحث عن 'Woo to Shopify Exporter' وقم بـ 'تفعيل'.
-4.  ستجد صفحة الإضافة الجديدة تحت قائمة 'أدوات' -> 'تصدير إلى شوبيفاي'.
+1. Upload the plugin files to the `/wp-content/plugins/woo-to-shopify-exporter` directory or install via Composer.
+2. Run `composer install` within the plugin directory to generate the PSR-4 autoloader.
+3. Activate the plugin through the **Plugins** screen in WordPress.
+4. Visit **WooCommerce → Shopify Export** to configure image copying and launch exports.
 
 == Frequently Asked Questions ==
 
-= أين أجد صفحة الإضافة؟ =
-بعد التفعيل، ستجدها في لوحة التحكم تحت قائمة "أدوات" (Tools) باسم "تصدير إلى شوبيفاي" (أو الاسم الذي اخترته في ملف `admin/menu.php`).
+= Does this plugin export data today? =
+Yes. The exporter streams products directly from WooCommerce into a Shopify-compatible CSV, logging warnings and
+failures along the way.
 
-= هل الإضافة تصدر الطلبات والعملاء؟ =
-لا، هذا الإصدار يركز على تصدير "المنتجات" فقط.
-
-= ماذا عن الحقول المخصصة (Metafields)؟ =
-هذه الإضافة مصممة لتصدير بيانات المنتج الأساسية. إذا كنت تحتاج حقولاً مخصصة (مثل نكهة **النكهة**، نوع **النكهة**...)، قد يتطلب الأمر تخصيصاً إضافياً في ملفات `includes/data-query.php` و `includes/csv-generator.php`.
-
-= الملف الناتج فيه مشاكل عند رفعه لشوبيفاي؟ =
-تأكد أن الترميز (Encoding) للملف هو `UTF-8`، خصوصاً للأسماء باللغة العربية. الإضافة تحاول عمل ذلك تلقائياً.
-
-== Screenshots ==
-
-1.  شكل صفحة الإضافة في لوحة التحكم مع زر التصدير.
-2.  مثال على ملف الـ CSV الناتج.
-
-(ملاحظة لك: لوضع الصور، ضعها في مجلد الإضافة باسم `screenshot-1.png`, `screenshot-2.png` وهكذا)
+= Where are exports stored? =
+Exports are written under the WordPress uploads directory in `woo-to-shopify-export/`. The folder contains the CSV,
+`job.log`, `failures.json`, the job state file, and an `images/` directory when image copying is enabled.
 
 == Changelog ==
 
-= 1.0.0 =
-* الإصدار الأولي.
-* إضافة صفحة التصدير في لوحة التحكم.
-* دعم تصدير المنتجات البسيطة والمتغيرة.
-* إنشاء ملف CSV بالصيغة الأساسية المتوافقة مع شوبيفاي.
-
-== Upgrade Notice ==
-
-= 1.0.0 =
-الإصدار الأول، لا توجد ملاحظات ترقية.
+= 0.1.0 =
+* Initial public release with streaming CSV writer, resumable export jobs, admin UI, image bundling, and validation improvements.
