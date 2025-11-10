@@ -1,66 +1,30 @@
 === Woo to Shopify Exporter ===
-Contributors: BY SALAH
-Tags: woocommerce, export, shopify, migration, csv
-Requires at least: 5.0
-Tested up to: 6.6
-Requires PHP: 7.4
+Contributors: nsb
+Requires at least: 6.0
+Tested up to: 6.4
+Requires PHP: 8.1
+Stable tag: 0.1.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-أداة بسيطة لتصدير منتجات ووكومرس إلى ملف CSV متوافق مع شوبيفاي.
+A starter plugin that scaffolds the WooCommerce to Shopify exporter.
 
 == Description ==
 
-هل تحتاج نقل متجرك من ووكومرس إلى شوبيفاي؟
-
-هذه الإضافة تقوم بتسهيل أهم خطوة: تصدير المنتجات.
-
-تقوم الإضافة بسحب جميع منتجات ووكومرس (WooCommerce) وتحويلها إلى ملف CSV بالصيغة المعتمدة من شوبيفاي (Shopify)، جاهز للرفع مباشرة.
-
-تم تطوير هذه الإضافة خصيصاً للتعامل مع:
-* المنتجات البسيطة (Simple Products).
-* المنتجات المتغيرة (Variable Products) وخياراتها (مثل الحجم، تركيز النيكوتين، اللون).
-* الأسعار، المخزون، والوصف (Body HTML).
-* الصور الرئيسية وصور الخيارات (Variant Images).
-* مطابقة الأعمدة بناءً على ملف الاستيراد الرسمي من شوبيفاي (مثل `Handle`, `Title`, `Variant SKU`).
+This plugin provides the structural scaffolding for a future WooCommerce to Shopify export workflow. It currently registers the necessary namespaces, directories, and bootstrap hooks without implementing business logic.
 
 == Installation ==
 
-1.  ارفع مجلد الإضافة `woo-to-shopify-exporter` بالكامل إلى المسار `/wp-content/plugins/`.
-2.  اذهب إلى 'الإضافات' في لوحة تحكم ووردبريس.
-3.  ابحث عن 'Woo to Shopify Exporter' وقم بـ 'تفعيل'.
-4.  ستجد صفحة الإضافة الجديدة تحت قائمة 'أدوات' -> 'تصدير إلى شوبيفاي'.
+1. Upload the plugin files to the `/wp-content/plugins/woo-to-shopify-exporter` directory, or install via Composer.
+2. Run `composer install` within the plugin directory to generate the autoloader.
+3. Activate the plugin through the 'Plugins' screen in WordPress.
 
 == Frequently Asked Questions ==
 
-= أين أجد صفحة الإضافة؟ =
-بعد التفعيل، ستجدها في لوحة التحكم تحت قائمة "أدوات" (Tools) باسم "تصدير إلى شوبيفاي" (أو الاسم الذي اخترته في ملف `admin/menu.php`).
-
-= هل الإضافة تصدر الطلبات والعملاء؟ =
-لا، هذا الإصدار يركز على تصدير "المنتجات" فقط.
-
-= ماذا عن الحقول المخصصة (Metafields)؟ =
-هذه الإضافة مصممة لتصدير بيانات المنتج الأساسية. إذا كنت تحتاج حقولاً مخصصة (مثل نكهة **النكهة**، نوع **النكهة**...)، قد يتطلب الأمر تخصيصاً إضافياً في ملفات `includes/data-query.php` و `includes/csv-generator.php`.
-
-= الملف الناتج فيه مشاكل عند رفعه لشوبيفاي؟ =
-تأكد أن الترميز (Encoding) للملف هو `UTF-8`، خصوصاً للأسماء باللغة العربية. الإضافة تحاول عمل ذلك تلقائياً.
-
-== Screenshots ==
-
-1.  شكل صفحة الإضافة في لوحة التحكم مع زر التصدير.
-2.  مثال على ملف الـ CSV الناتج.
-
-(ملاحظة لك: لوضع الصور، ضعها في مجلد الإضافة باسم `screenshot-1.png`, `screenshot-2.png` وهكذا)
+= Does this plugin export data today? =
+Not yet. The current release focuses on establishing the foundation for future development.
 
 == Changelog ==
 
-= 1.0.0 =
-* الإصدار الأولي.
-* إضافة صفحة التصدير في لوحة التحكم.
-* دعم تصدير المنتجات البسيطة والمتغيرة.
-* إنشاء ملف CSV بالصيغة الأساسية المتوافقة مع شوبيفاي.
-
-== Upgrade Notice ==
-
-= 1.0.0 =
-الإصدار الأول، لا توجد ملاحظات ترقية.
+= 0.1.0 =
+* Initial scaffolding release.
