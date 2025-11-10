@@ -404,10 +404,13 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
          * @return array
          */
         protected function build_rows_from_package( array $package ) {
-            $rows        = array();
-            $product_row = isset( $package['product'] ) && is_array( $package['product'] ) ? $package['product'] : array();
-            $variants    = isset( $package['variants'] ) && is_array( $package['variants'] ) ? $package['variants'] : array();
-            $images      = isset( $package['images'] ) && is_array( $package['images'] ) ? $package['images'] : array();
+            $rows         = array();
+            $product_row  = isset( $package['product'] ) && is_array( $package['product'] ) ? $package['product'] : array();
+            $variants     = isset( $package['variants'] ) && is_array( $package['variants'] ) ? $package['variants'] : array();
+            $images       = isset( $package['images'] ) && is_array( $package['images'] ) ? $package['images'] : array();
+            $product_meta = isset( $package['meta'] ) && isset( $package['meta']['product'] ) && is_array( $package['meta']['product'] )
+                ? $package['meta']['product']
+                : array();
 
             if ( empty( $variants ) ) {
                 $variants = array(
@@ -421,8 +424,19 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
                 $variants = array( reset( $variants ) );
             }
 
+            $should_add_parent_row = $this->should_add_parent_row( $product_meta, $variants );
+            $option_template       = $this->extract_option_name_template( $variants );
+
+            if ( $should_add_parent_row ) {
+                $parent_variant = $this->build_parent_variant_stub( $option_template );
+                $rows[]         = $this->merge_product_and_variant_row( $product_row, $parent_variant, 0 );
+                $variant_offset = 1;
+            } else {
+                $variant_offset = 0;
+            }
+
             foreach ( array_values( $variants ) as $index => $variant ) {
-                $rows[] = $this->merge_product_and_variant_row( $product_row, $variant, $index );
+                $rows[] = $this->merge_product_and_variant_row( $product_row, $variant, $index + $variant_offset );
             }
 
             if ( $this->options['include_images'] && ! empty( $images ) ) {
@@ -467,6 +481,106 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
             }
 
             return $row;
+        }
+
+        /**
+         * Determines whether a parent row should precede the variant rows.
+         *
+         * @param array $product_meta Product metadata from the package.
+         * @param array $variants     Variant rows generated for the product.
+         *
+         * @return bool
+         */
+        protected function should_add_parent_row( array $product_meta, array $variants ) {
+            if ( empty( $this->options['include_variants'] ) ) {
+                return false;
+            }
+
+            if ( empty( $variants ) ) {
+                return false;
+            }
+
+            $type = isset( $product_meta['type'] ) ? $product_meta['type'] : '';
+
+            return 'variable' === $type;
+        }
+
+        /**
+         * Extracts option name mappings from the variant rows.
+         *
+         * @param array $variants Variant rows.
+         *
+         * @return array
+         */
+        protected function extract_option_name_template( array $variants ) {
+            $template = array();
+
+            for ( $i = 1; $i <= 3; $i++ ) {
+                $key = 'Option' . $i . ' Name';
+
+                foreach ( $variants as $variant ) {
+                    if ( isset( $variant[ $key ] ) && '' !== $variant[ $key ] ) {
+                        $template[ $key ] = $variant[ $key ];
+                        break;
+                    }
+                }
+            }
+
+            return $template;
+        }
+
+        /**
+         * Builds a placeholder variant row for the parent product entry.
+         *
+         * @param array $option_template Option name template.
+         *
+         * @return array
+         */
+        protected function build_parent_variant_stub( array $option_template ) {
+            $stub = array();
+
+            foreach ( $this->get_variant_column_keys() as $column ) {
+                $stub[ $column ] = '';
+            }
+
+            for ( $i = 1; $i <= 3; $i++ ) {
+                $name_key        = 'Option' . $i . ' Name';
+                $value_key       = 'Option' . $i . ' Value';
+                $stub[ $value_key ] = '';
+
+                if ( isset( $option_template[ $name_key ] ) ) {
+                    $stub[ $name_key ] = $option_template[ $name_key ];
+                }
+            }
+
+            return $stub;
+        }
+
+        /**
+         * Provides the Shopify variant column keys for stubs.
+         *
+         * @return array
+         */
+        protected function get_variant_column_keys() {
+            return array(
+                'Option1 Name',
+                'Option1 Value',
+                'Option2 Name',
+                'Option2 Value',
+                'Option3 Name',
+                'Option3 Value',
+                'Variant SKU',
+                'Variant Price',
+                'Compare At Price',
+                'Variant Inventory Qty',
+                'Inventory Policy',
+                'Inventory Tracker',
+                'Variant Barcode',
+                'Variant Weight',
+                'Variant Weight Unit',
+                'Variant Requires Shipping',
+                'Variant Taxable',
+            );
         }
 
         /**
