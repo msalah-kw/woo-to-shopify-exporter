@@ -97,6 +97,14 @@
     flex: 1 1 200px;
 }
 
+.wse-columns .wse-checkbox {
+    align-items: flex-start;
+}
+
+.wse-columns .small-text {
+    max-width: 140px;
+}
+
 .wse-scope-extended {
     display: none;
     margin: 0.5rem 0 1rem 1.75rem;
@@ -193,7 +201,7 @@
 
 .wse-summary-list {
     display: grid;
-    grid-template-columns: 160px 1fr;
+    grid-template-columns: minmax(150px, 220px) 1fr;
     gap: 0.5rem 1rem;
     margin: 0;
 }
