@@ -122,6 +122,13 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
         protected $warnings = array();
 
         /**
+         * Last recorded validation failure details.
+         *
+         * @var array
+         */
+        protected $last_failure = array();
+
+        /**
          * Constructor.
          *
          * @param array $args Writer configuration.
@@ -213,6 +220,33 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
          */
         public function get_batch_size() {
             return $this->options['batch_size'];
+        }
+
+        /**
+         * Determines whether image rows should be included in the output.
+         *
+         * @return bool
+         */
+        public function includes_images() {
+            return ! empty( $this->options['include_images'] );
+        }
+
+        /**
+         * Determines whether variant rows should be included in the output.
+         *
+         * @return bool
+         */
+        public function includes_variants() {
+            return ! empty( $this->options['include_variants'] );
+        }
+
+        /**
+         * Determines whether inventory columns should be populated.
+         *
+         * @return bool
+         */
+        public function includes_inventory() {
+            return ! empty( $this->options['include_inventory'] );
         }
 
         /**
@@ -332,16 +366,27 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
         }
 
         /**
+         * Returns the last recorded validation failure, if any.
+         *
+         * @return array
+         */
+        public function get_last_failure() {
+            return $this->last_failure;
+        }
+
+        /**
          * Writes a product package (product, variants, images) to the CSV stream.
          *
          * @param array $package Product package returned from the product source.
          *
          * @return bool
-         */
+        */
         public function write_product_package( array $package ) {
             if ( $this->last_error instanceof WP_Error ) {
                 return false;
             }
+
+            $this->last_failure = array();
 
             if ( ! $this->validate_package( $package ) ) {
                 return false;
@@ -371,6 +416,11 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
 
             if ( empty( $product ) ) {
                 $this->last_error = new WP_Error( 'wse_missing_product_row', __( 'Product data is missing from the export package.', 'woo-to-shopify-exporter' ) );
+                $this->record_failure(
+                    'wse_missing_product_row',
+                    __( 'Product data is missing from the export package.', 'woo-to-shopify-exporter' ),
+                    array()
+                );
                 return false;
             }
 
@@ -399,6 +449,13 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
 
             if ( '' === $handle ) {
                 $this->last_error = new WP_Error( 'wse_missing_handle', __( 'Every product must include a Shopify handle.', 'woo-to-shopify-exporter' ) );
+                $this->record_failure(
+                    'wse_missing_handle',
+                    __( 'Every product must include a Shopify handle.', 'woo-to-shopify-exporter' ),
+                    array(
+                        'handle' => $handle,
+                    )
+                );
                 return false;
             }
 
@@ -415,6 +472,19 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
                         70
                     )
                 );
+                $this->record_failure(
+                    'wse_seo_title_too_long',
+                    sprintf(
+                        /* translators: 1: product handle. 2: maximum character length. */
+                        __( 'The SEO title for product handle "%1$s" exceeds %2$d characters.', 'woo-to-shopify-exporter' ),
+                        $handle,
+                        70
+                    ),
+                    array(
+                        'handle' => $handle,
+                        'limit'  => 70,
+                    )
+                );
 
                 return false;
             }
@@ -427,6 +497,19 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
                         __( 'The SEO description for product handle "%1$s" exceeds %2$d characters.', 'woo-to-shopify-exporter' ),
                         $handle,
                         160
+                    )
+                );
+                $this->record_failure(
+                    'wse_seo_description_too_long',
+                    sprintf(
+                        /* translators: 1: product handle. 2: maximum character length. */
+                        __( 'The SEO description for product handle "%1$s" exceeds %2$d characters.', 'woo-to-shopify-exporter' ),
+                        $handle,
+                        160
+                    ),
+                    array(
+                        'handle' => $handle,
+                        'limit'  => 160,
                     )
                 );
 
@@ -487,6 +570,19 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
                                     $handle
                                 )
                             );
+                            $this->record_failure(
+                                'wse_option_limit_exceeded',
+                                sprintf(
+                                    /* translators: 1: product handle. */
+                                    __( 'Product handle "%1$s" defines more than three options, which Shopify does not support.', 'woo-to-shopify-exporter' ),
+                                    $handle
+                                ),
+                                array(
+                                    'handle'        => $handle,
+                                    'column'        => $column,
+                                    'variant_index' => $index + 1,
+                                )
+                            );
 
                             return false;
                         }
@@ -505,6 +601,20 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
                             $index + 1
                         )
                     );
+                    $this->record_failure(
+                        'wse_variant_price_invalid',
+                        sprintf(
+                            /* translators: 1: product handle, 2: variant index (1-based). */
+                            __( 'Variant %2$d for product handle "%1$s" must have a numeric price.', 'woo-to-shopify-exporter' ),
+                            $handle,
+                            $index + 1
+                        ),
+                        array(
+                            'handle'        => $handle,
+                            'variant_index' => $index + 1,
+                            'value'         => $price,
+                        )
+                    );
 
                     return false;
                 }
@@ -519,6 +629,20 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
                             __( 'Compare-at price for variant %2$d of product handle "%1$s" must be numeric.', 'woo-to-shopify-exporter' ),
                             $handle,
                             $index + 1
+                        )
+                    );
+                    $this->record_failure(
+                        'wse_compare_at_price_invalid',
+                        sprintf(
+                            /* translators: 1: product handle, 2: variant index (1-based). */
+                            __( 'Compare-at price for variant %2$d of product handle "%1$s" must be numeric.', 'woo-to-shopify-exporter' ),
+                            $handle,
+                            $index + 1
+                        ),
+                        array(
+                            'handle'        => $handle,
+                            'variant_index' => $index + 1,
+                            'value'         => $compare,
                         )
                     );
 
@@ -537,6 +661,20 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
                             $inventory_policy
                         )
                     );
+                    $this->record_failure(
+                        'wse_inventory_policy_invalid',
+                        sprintf(
+                            /* translators: 1: product handle, 2: inventory policy value. */
+                            __( 'Inventory policy "%2$s" for product handle "%1$s" is not supported by Shopify.', 'woo-to-shopify-exporter' ),
+                            $handle,
+                            $inventory_policy
+                        ),
+                        array(
+                            'handle'  => $handle,
+                            'policy'  => $inventory_policy,
+                            'variant' => $index + 1,
+                        )
+                    );
 
                     return false;
                 }
@@ -550,6 +688,18 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
                             /* translators: 1: product handle. */
                             __( 'Duplicate variant detected for product handle "%1$s". Handles and option combinations must be unique.', 'woo-to-shopify-exporter' ),
                             $handle
+                        )
+                    );
+                    $this->record_failure(
+                        'wse_duplicate_variant',
+                        sprintf(
+                            /* translators: 1: product handle. */
+                            __( 'Duplicate variant detected for product handle "%1$s". Handles and option combinations must be unique.', 'woo-to-shopify-exporter' ),
+                            $handle
+                        ),
+                        array(
+                            'handle'        => $handle,
+                            'variant_index' => $index + 1,
                         )
                     );
 
@@ -590,6 +740,21 @@ if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
              * @param WSE_Shopify_CSV_Writer $writer  Current writer instance.
              */
             do_action( 'wse_csv_writer_warning', $warning, $this );
+        }
+
+        /**
+         * Records the last validation failure details.
+         *
+         * @param string $code    Failure code.
+         * @param string $message Human readable message.
+         * @param array  $data    Contextual data.
+         */
+        protected function record_failure( $code, $message, array $data = array() ) {
+            $this->last_failure = array(
+                'code'    => $code,
+                'message' => $message,
+                'data'    => $data,
+            );
         }
 
         /**

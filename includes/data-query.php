@@ -40,32 +40,102 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
                 return $this->empty_response();
             }
 
-            $args = $this->build_query_args( $scope );
-            $query = new WC_Product_Query( $args );
+            $response       = $this->empty_response();
+            $include_images = ! isset( $scope['include_images'] ) || (bool) $scope['include_images'];
+
+            $this->streamProducts(
+                $scope,
+                function ( $package ) use ( &$response ) {
+                    if ( empty( $package ) || ! is_array( $package ) ) {
+                        return true;
+                    }
+
+                    $response['products'][] = $package['product'];
+                    $response['variants']   = array_merge( $response['variants'], $package['variants'] );
+                    $response['images']     = array_merge( $response['images'], $package['images'] );
+                    $response['items'][]    = $package;
+
+                    return true;
+                }
+            );
+
+            if ( ! $include_images && ! empty( $response['items'] ) ) {
+                foreach ( $response['items'] as &$package ) {
+                    if ( isset( $package['images'] ) ) {
+                        $package['images'] = array();
+                    }
+                }
+                unset( $package );
+                $response['images'] = array();
+            }
+
+            return $response;
+        }
+
+        /**
+         * Streams product packages invoking a callback for each entry.
+         *
+         * @param array    $scope    Scope definition.
+         * @param callable $callback Callback receiving the package. Return false to stop early.
+         *
+         * @return array { query_count => int, processed => int, stopped => bool }
+         */
+        public function streamProducts( array $scope, callable $callback ) {
+            if ( ! class_exists( 'WC_Product_Query' ) ) {
+                return array(
+                    'query_count' => 0,
+                    'processed'   => 0,
+                    'stopped'     => false,
+                );
+            }
+
+            $include_images = ! isset( $scope['include_images'] ) || (bool) $scope['include_images'];
+            $resume_from_id = isset( $scope['resume_from_id'] ) ? (int) $scope['resume_from_id'] : 0;
+
+            $query_scope = $scope;
+            unset( $query_scope['include_images'], $query_scope['stream'], $query_scope['stream_callback'], $query_scope['resume_from_id'] );
+
+            $args    = $this->build_query_args( $query_scope );
+            $query   = new WC_Product_Query( $args );
             $results = $query->get_products();
 
             if ( empty( $results ) ) {
-                return $this->empty_response();
+                return array(
+                    'query_count' => 0,
+                    'processed'   => 0,
+                    'stopped'     => false,
+                );
             }
 
             $organized = $this->organize_products( $results );
-
-            $response = $this->empty_response();
+            $processed = 0;
+            $stopped   = false;
 
             foreach ( $organized as $entry ) {
                 if ( empty( $entry['product'] ) || ! $entry['product'] instanceof WC_Product ) {
                     continue;
                 }
 
-                $package = $this->format_product( $entry['product'], $entry['variations'] );
+                if ( $resume_from_id && $entry['product']->get_id() && (int) $entry['product']->get_id() <= $resume_from_id ) {
+                    continue;
+                }
 
-                $response['products'][] = $package['product'];
-                $response['variants']   = array_merge( $response['variants'], $package['variants'] );
-                $response['images']     = array_merge( $response['images'], $package['images'] );
-                $response['items'][]    = $package;
+                $package = $this->format_product( $entry['product'], $entry['variations'], $include_images );
+                $processed++;
+
+                $result = call_user_func( $callback, $package );
+
+                if ( false === $result ) {
+                    $stopped = true;
+                    break;
+                }
             }
 
-            return $response;
+            return array(
+                'query_count' => count( $results ),
+                'processed'   => $processed,
+                'stopped'     => $stopped,
+            );
         }
 
         /**
@@ -237,8 +307,8 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
          *     @type array $meta     Normalized product and variation metadata.
          * }
          */
-        protected function format_product( WC_Product $product, array $variations = array() ) {
-            $data = $this->base_product_data( $product );
+        protected function format_product( WC_Product $product, array $variations = array(), $include_images = true ) {
+            $data = $this->base_product_data( $product, null, $include_images );
 
             $variation_meta = array();
 
@@ -267,7 +337,7 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
             }
 
             $shopify_product = $this->build_shopify_product_row( $data );
-            $shopify_images   = $this->build_shopify_image_rows( $data );
+            $shopify_images   = $include_images ? $this->build_shopify_image_rows( $data ) : array();
 
             return array(
                 'product'  => $shopify_product,
@@ -302,8 +372,8 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
          *
          * @return array
          */
-        protected function create_variation_meta( WC_Product_Variation $variation, WC_Product $parent ) {
-            $data               = $this->base_product_data( $variation, $parent );
+        protected function create_variation_meta( WC_Product_Variation $variation, WC_Product $parent, $include_images = false ) {
+            $data               = $this->base_product_data( $variation, $parent, $include_images );
             $data['attributes'] = $this->get_variation_attributes( $variation, $parent );
 
             return $data;
@@ -1419,11 +1489,11 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
          *
          * @return array
          */
-        protected function base_product_data( WC_Product $product, $parent = null ) {
+        protected function base_product_data( WC_Product $product, $parent = null, $include_images = true ) {
             $source_product = $parent instanceof WC_Product ? $parent : $product;
 
             $brand        = $this->get_brand( $product, $parent );
-            $images       = $this->collect_images( $product, $parent );
+            $images       = $include_images ? $this->collect_images( $product, $parent ) : array();
             $handle       = $this->normalize_handle( $product->get_slug(), $product->get_name() );
             $description  = $this->clean_description_html( $product->get_description() );
             $short_desc   = $this->clean_short_description( $product->get_short_description() );
@@ -2188,6 +2258,18 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
      */
     function wse_load_products( array $scope = array() ) {
         return wse_get_product_source()->loadProducts( $scope );
+    }
+
+    /**
+     * Streams product packages invoking a callback.
+     *
+     * @param array    $scope    Scope definition.
+     * @param callable $callback Callback receiving the package. Return false to stop early.
+     *
+     * @return array { query_count => int, processed => int, stopped => bool }
+     */
+    function wse_stream_products( array $scope, callable $callback ) {
+        return wse_get_product_source()->streamProducts( $scope, $callback );
     }
 }
 

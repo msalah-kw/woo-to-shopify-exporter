@@ -156,37 +156,83 @@ if ( ! function_exists( 'wse_generate_shopify_csv' ) ) {
             return $error;
         }
 
-        $scope      = wse_build_product_scope_from_settings( $settings );
-        $batch_size = $writer->get_batch_size();
-        $page       = 1;
-        $processed  = 0;
+        $indexed = wse_ensure_postmeta_indexes();
+        if ( is_wp_error( $indexed ) ) {
+            $message = sprintf(
+                /* translators: %s: database error message. */
+                __( 'Unable to create optimized postmeta indexes. Continuing without them. (%s)', 'woo-to-shopify-exporter' ),
+                $indexed->get_error_message()
+            );
+
+            if ( function_exists( 'error_log' ) ) {
+                error_log( 'Woo to Shopify Exporter: ' . $message );
+            }
+
+            /**
+             * Fires when the exporter cannot create the recommended postmeta indexes.
+             *
+             * @since 1.0.0
+             *
+             * @param WP_Error $indexed_error Index creation error.
+             * @param mixed    $context       Optional context, null outside orchestrated exports.
+             */
+            do_action( 'wse_postmeta_index_error', $indexed, null );
+        }
+
+        $scope       = wse_build_product_scope_from_settings( $settings );
+        $batch_size  = $writer->get_batch_size();
+        $page        = 1;
+        $processed   = 0;
+        $items_count = 0;
+        $include_images = $writer->includes_images();
 
         do {
             $query_scope = $scope;
             $query_scope['limit'] = $batch_size;
             $query_scope['page']  = $page;
+            $query_scope['include_images'] = $include_images;
 
-            $result = wse_load_products( $query_scope );
+            $stream_error = null;
 
-            if ( empty( $result['items'] ) ) {
+            $result = wse_stream_products(
+                $query_scope,
+                function ( $package ) use ( $writer, &$processed, &$stream_error ) {
+                    $processed++;
+
+                    if ( $stream_error instanceof WP_Error ) {
+                        return false;
+                    }
+
+                    if ( ! $writer->write_product_package( $package ) ) {
+                        $error = $writer->get_last_error();
+
+                        if ( ! $error instanceof WP_Error ) {
+                            $error = new WP_Error( 'wse_csv_write_failed', __( 'Failed to write the Shopify export file.', 'woo-to-shopify-exporter' ) );
+                        }
+
+                        $stream_error = $error;
+
+                        return false;
+                    }
+
+                    return true;
+                }
+            );
+
+            if ( $stream_error instanceof WP_Error ) {
+                $writer->finish();
+
+                return $stream_error;
+            }
+
+            $items_count = isset( $result['query_count'] ) ? (int) $result['query_count'] : 0;
+
+            if ( 0 === $items_count ) {
                 break;
             }
 
-            foreach ( $result['items'] as $package ) {
-                $processed++;
-
-                if ( ! $writer->write_product_package( $package ) ) {
-                    $writer->finish();
-                    $error = $writer->get_last_error();
-                    if ( ! $error instanceof WP_Error ) {
-                        $error = new WP_Error( 'wse_csv_write_failed', __( 'Failed to write the Shopify export file.', 'woo-to-shopify-exporter' ) );
-                    }
-                    return $error;
-                }
-            }
-
             $page++;
-        } while ( count( $result['items'] ) >= $batch_size );
+        } while ( $items_count >= $batch_size );
 
         if ( ! $writer->finish() ) {
             $error = $writer->get_last_error();
