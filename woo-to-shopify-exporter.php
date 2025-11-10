@@ -35,6 +35,7 @@ if ( ! defined( 'WTS_EXPORTER_PLUGIN_URL' ) ) {
 }
 
 add_action( 'admin_menu', 'wts_exporter_register_admin_page' );
+add_action( 'admin_post_wts_export_products', 'wts_exporter_handle_export_request' );
 
 /**
  * Registers the Woo to Shopify Exporter admin submenu page under WooCommerce.
@@ -48,6 +49,36 @@ function wts_exporter_register_admin_page() {
         'wts-exporter',
         'wts_exporter_render_admin_page'
     );
+}
+
+/**
+ * Handles the export form submission dispatched via admin-post.
+ */
+function wts_exporter_handle_export_request() {
+    if ( ! current_user_can( 'manage_woocommerce' ) ) {
+        wp_die( esc_html__( 'You do not have permission to export products.', 'woo-to-shopify-exporter' ) );
+    }
+
+    check_admin_referer( 'wts_export_products', 'wts_export_nonce' );
+
+    $category_id     = isset( $_POST['wts_export_category'] ) ? absint( $_POST['wts_export_category'] ) : 0;
+    $published_only  = ! empty( $_POST['wts_export_published_only'] );
+    $default_vendor  = isset( $_POST['wts_export_vendor'] ) ? sanitize_text_field( wp_unslash( $_POST['wts_export_vendor'] ) ) : '';
+
+    $export_args = array(
+        'category_id'    => $category_id > 0 ? $category_id : null,
+        'published_only' => $published_only,
+        'default_vendor' => $default_vendor,
+    );
+
+    /**
+     * Fires when the Woo to Shopify export process should run.
+     *
+     * @param array $export_args Arguments collected from the admin export form.
+     */
+    do_action( 'wts_exporter_process_export', $export_args );
+
+    wp_die( esc_html__( 'Export processing is not yet implemented.', 'woo-to-shopify-exporter' ) );
 }
 
 /**
