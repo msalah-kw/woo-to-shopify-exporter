@@ -77,6 +77,243 @@ if ( ! function_exists( 'wse_ensure_export_jobs_table' ) ) {
     }
 }
 
+if ( ! function_exists( 'wse_ensure_postmeta_indexes' ) ) {
+
+    /**
+     * Ensures supporting indexes exist on the postmeta table for heavy reads.
+     *
+     * @global wpdb $wpdb WordPress database abstraction object.
+     *
+     * @return true|WP_Error
+     */
+    function wse_ensure_postmeta_indexes() {
+        global $wpdb;
+
+        if ( ! isset( $wpdb ) ) {
+            return new WP_Error( 'wse_database_unavailable', __( 'Database connection is not available.', 'woo-to-shopify-exporter' ) );
+        }
+
+        $table = isset( $wpdb->postmeta ) ? $wpdb->postmeta : $wpdb->prefix . 'postmeta';
+
+        if ( empty( $table ) ) {
+            return true;
+        }
+
+        $indexes = array();
+        $results = $wpdb->get_results( "SHOW INDEX FROM `{$table}`", ARRAY_A );
+
+        if ( is_array( $results ) ) {
+            foreach ( $results as $row ) {
+                if ( isset( $row['Key_name'] ) ) {
+                    $indexes[ $row['Key_name'] ] = true;
+                }
+            }
+        } elseif ( ! empty( $wpdb->last_error ) ) {
+            return new WP_Error( 'wse_postmeta_index_error', $wpdb->last_error );
+        }
+
+        $targets = array(
+            'wse_pm_meta_key_post_id' => 'meta_key(191), post_id',
+            'wse_pm_post_id_meta_key' => 'post_id, meta_key(191)',
+        );
+
+        foreach ( $targets as $name => $definition ) {
+            if ( isset( $indexes[ $name ] ) ) {
+                continue;
+            }
+
+            $query = "CREATE INDEX `{$name}` ON `{$table}` ({$definition})";
+            $result = $wpdb->query( $query );
+
+            if ( false === $result && ! empty( $wpdb->last_error ) ) {
+                return new WP_Error( 'wse_postmeta_index_error', $wpdb->last_error );
+            }
+        }
+
+        return true;
+    }
+}
+
+if ( ! class_exists( 'WSE_Export_Logger' ) ) {
+
+    /**
+     * Persists structured export logs and failure details alongside generated files.
+     */
+    class WSE_Export_Logger {
+
+        /**
+         * Path to the job log file.
+         *
+         * @var string
+         */
+        protected $log_path = '';
+
+        /**
+         * Path to the failure manifest file.
+         *
+         * @var string
+         */
+        protected $failures_path = '';
+
+        /**
+         * Collected failures for JSON output.
+         *
+         * @var array
+         */
+        protected $failures = array();
+
+        /**
+         * Identifier for the active job.
+         *
+         * @var string
+         */
+        protected $job_id = '';
+
+        /**
+         * Last error encountered while writing log output.
+         *
+         * @var WP_Error|null
+         */
+        protected $last_error = null;
+
+        /**
+         * Constructor.
+         *
+         * @param string $directory Export directory path.
+         * @param string $job_id    Export job identifier.
+         */
+        public function __construct( $directory, $job_id ) {
+            $directory     = wp_normalize_path( (string) $directory );
+            $this->job_id  = (string) $job_id;
+            $this->log_path      = trailingslashit( $directory ) . 'job.log';
+            $this->failures_path = trailingslashit( $directory ) . 'failures.json';
+
+            if ( '' === $directory || ! wp_mkdir_p( $directory ) ) {
+                $this->last_error = new WP_Error( 'wse_log_dir_unwritable', __( 'Unable to create the export log directory.', 'woo-to-shopify-exporter' ) );
+                return;
+            }
+
+            if ( ! file_exists( $this->log_path ) ) {
+                if ( false === @file_put_contents( $this->log_path, '' ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+                    $this->last_error = new WP_Error( 'wse_log_write_failed', __( 'Unable to initialize job.log.', 'woo-to-shopify-exporter' ) );
+                    return;
+                }
+            }
+
+            if ( file_exists( $this->failures_path ) ) {
+                $contents = @file_get_contents( $this->failures_path ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+                $decoded  = json_decode( $contents, true );
+
+                if ( is_array( $decoded ) ) {
+                    $this->failures = $decoded;
+                }
+            } else {
+                $this->save_failures();
+            }
+        }
+
+        /**
+         * Writes a formatted message to job.log.
+         *
+         * @param string $level   Log level (info, warning, error).
+         * @param string $message Message to log.
+         * @param array  $context Optional contextual data.
+         *
+         * @return void
+         */
+        public function log( $level, $message, array $context = array() ) {
+            if ( empty( $this->log_path ) ) {
+                return;
+            }
+
+            $context = $this->augment_context( $context );
+            $level   = strtoupper( (string) $level );
+            $line    = sprintf( '[%s] %s: %s', gmdate( 'c' ), $level, $message );
+
+            if ( ! empty( $context ) ) {
+                $line .= ' ' . wp_json_encode( $context, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+            }
+
+            $line .= PHP_EOL;
+
+            if ( false === @file_put_contents( $this->log_path, $line, FILE_APPEND | LOCK_EX ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+                $this->last_error = new WP_Error( 'wse_log_write_failed', __( 'Unable to write to job.log.', 'woo-to-shopify-exporter' ) );
+            }
+        }
+
+        /**
+         * Records a failure entry and persists failures.json.
+         *
+         * @param string $code    Failure code identifier.
+         * @param string $message Description of the failure.
+         * @param array  $data    Additional context for the failure.
+         * @param string $level   Severity level (error|warning).
+         *
+         * @return void
+         */
+        public function record_failure( $code, $message, array $data = array(), $level = 'error' ) {
+            $data = $this->augment_context( $data );
+
+            if ( isset( $data['job_id'] ) ) {
+                unset( $data['job_id'] );
+            }
+
+            $entry = array(
+                'timestamp' => time(),
+                'level'     => strtolower( (string) $level ),
+                'code'      => (string) $code,
+                'message'   => (string) $message,
+                'job_id'    => $this->job_id,
+                'data'      => $data,
+            );
+
+            $this->failures[] = $entry;
+            $this->save_failures();
+        }
+
+        /**
+         * Returns the last logger error, if any.
+         *
+         * @return WP_Error|null
+         */
+        public function get_last_error() {
+            return $this->last_error;
+        }
+
+        /**
+         * Augments context arrays with the job identifier.
+         *
+         * @param array $context Existing context data.
+         *
+         * @return array
+         */
+        protected function augment_context( array $context ) {
+            if ( $this->job_id && ! isset( $context['job_id'] ) ) {
+                $context['job_id'] = $this->job_id;
+            }
+
+            return $context;
+        }
+
+        /**
+         * Persists the in-memory failures collection to disk.
+         *
+         * @return void
+         */
+        protected function save_failures() {
+            if ( empty( $this->failures_path ) ) {
+                return;
+            }
+
+            $encoded = wp_json_encode( $this->failures, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+
+            if ( false === @file_put_contents( $this->failures_path, $encoded ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+                $this->last_error = new WP_Error( 'wse_failure_log_unwritable', __( 'Unable to write failures.json.', 'woo-to-shopify-exporter' ) );
+            }
+        }
+    }
+}
+
 if ( ! function_exists( 'wse_decode_job_field' ) ) {
 
     /**
@@ -366,6 +603,34 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
         protected $lock_acquired = false;
 
         /**
+         * Export output directory information (path + URL).
+         *
+         * @var array
+         */
+        protected $output_directory = array();
+
+        /**
+         * Delimiter used for generated CSV files.
+         *
+         * @var string
+         */
+        protected $file_delimiter = ',';
+
+        /**
+         * Logger instance capturing job output and failures.
+         *
+         * @var WSE_Export_Logger|null
+         */
+        protected $logger = null;
+
+        /**
+         * Captures errors encountered while creating postmeta indexes.
+         *
+         * @var WP_Error|null
+         */
+        protected $postmeta_index_error = null;
+
+        /**
          * Constructor.
          *
          * @param array $job  Job payload containing at minimum an id and settings.
@@ -452,6 +717,26 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
 
             $this->lock_acquired = true;
 
+            $indexed = wse_ensure_postmeta_indexes();
+
+            if ( is_wp_error( $indexed ) ) {
+                $this->postmeta_index_error = $indexed;
+
+                if ( function_exists( 'error_log' ) ) {
+                    error_log( 'Woo to Shopify Exporter: ' . $indexed->get_error_message() );
+                }
+
+                /**
+                 * Fires when the exporter cannot create the recommended postmeta indexes.
+                 *
+                 * @since 1.0.0
+                 *
+                 * @param WP_Error              $indexed_error Index creation error.
+                 * @param WSE_Export_Orchestrator $orchestrator Current orchestrator instance.
+                 */
+                do_action( 'wse_postmeta_index_error', $indexed, $this );
+            }
+
             $record = wse_get_export_job_record( $job_id );
 
             $settings = array();
@@ -504,6 +789,10 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
                 $this->writer->restore_state( $this->job['writer_state'] );
             }
 
+            $this->initialize_logger();
+
+            $this->log_postmeta_index_warning();
+
             $this->batch_size = $this->writer instanceof WSE_Shopify_CSV_Writer ? $this->writer->get_batch_size() : $this->batch_size;
 
             $this->job['status']       = 'running';
@@ -514,6 +803,128 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
             $this->persist_job_state();
 
             return true;
+        }
+
+        /**
+         * Initializes the export logger and attaches writer hooks.
+         *
+         * @return void
+         */
+        protected function initialize_logger() {
+            if ( $this->logger instanceof WSE_Export_Logger ) {
+                return;
+            }
+
+            if ( empty( $this->output_directory['path'] ) ) {
+                return;
+            }
+
+            $logger = new WSE_Export_Logger( $this->output_directory['path'], isset( $this->job['id'] ) ? $this->job['id'] : '' );
+
+            if ( $logger->get_last_error() instanceof WP_Error ) {
+                if ( function_exists( 'error_log' ) ) {
+                    error_log( 'Woo to Shopify Exporter: ' . $logger->get_last_error()->get_error_message() );
+                }
+
+                return;
+            }
+
+            $this->logger = $logger;
+
+            add_action( 'wse_csv_writer_warning', array( $this, 'handle_writer_warning' ), 10, 2 );
+
+            $resume = isset( $this->job['product_count'] ) ? (int) $this->job['product_count'] > 0 : false;
+            $scope_summary = array(
+                'type'           => isset( $this->scope['type'] ) ? $this->scope['type'] : 'all',
+                'status'         => isset( $this->scope['status'] ) ? array_values( (array) $this->scope['status'] ) : array(),
+                'category_count' => isset( $this->scope['categories'] ) ? count( (array) $this->scope['categories'] ) : 0,
+                'tag_count'      => isset( $this->scope['tags'] ) ? count( (array) $this->scope['tags'] ) : 0,
+                'id_count'       => isset( $this->scope['ids'] ) ? count( (array) $this->scope['ids'] ) : 0,
+            );
+
+            $writer_summary = array(
+                'batch_size'        => $this->writer instanceof WSE_Shopify_CSV_Writer ? $this->writer->get_batch_size() : $this->batch_size,
+                'include_images'    => $this->writer instanceof WSE_Shopify_CSV_Writer ? $this->writer->includes_images() : true,
+                'include_variants'  => $this->writer instanceof WSE_Shopify_CSV_Writer ? $this->writer->includes_variants() : true,
+                'include_inventory' => $this->writer instanceof WSE_Shopify_CSV_Writer ? $this->writer->includes_inventory() : true,
+            );
+
+            $message = $resume ? __( 'Resuming export job.', 'woo-to-shopify-exporter' ) : __( 'Starting export job.', 'woo-to-shopify-exporter' );
+
+            $this->logger->log(
+                'info',
+                $message,
+                array(
+                    'scope'           => $scope_summary,
+                    'writer'          => $writer_summary,
+                    'resume'          => $resume,
+                    'last_product_id' => isset( $this->job['last_product_id'] ) ? (int) $this->job['last_product_id'] : 0,
+                )
+            );
+        }
+
+        /**
+         * Emits a warning entry when postmeta indexes cannot be created.
+         *
+         * @return void
+         */
+        protected function log_postmeta_index_warning() {
+            if ( ! ( $this->postmeta_index_error instanceof WP_Error ) ) {
+                return;
+            }
+
+            $error   = $this->postmeta_index_error;
+            $message = sprintf(
+                /* translators: %s: database error message. */
+                __( 'Unable to create optimized postmeta indexes. Continuing without them. (%s)', 'woo-to-shopify-exporter' ),
+                $error->get_error_message()
+            );
+
+            $context = array(
+                'code' => $error->get_error_code(),
+            );
+
+            if ( $this->logger instanceof WSE_Export_Logger ) {
+                $this->logger->log( 'warning', $message, $context );
+                $this->logger->record_failure( $error->get_error_code(), $message, $context, 'warning' );
+            }
+
+            $this->postmeta_index_error = null;
+        }
+
+        /**
+         * Handles warnings emitted by the CSV writer.
+         *
+         * @param array                 $warning Warning payload.
+         * @param WSE_Shopify_CSV_Writer $writer  Writer instance.
+         *
+         * @return void
+         */
+        public function handle_writer_warning( $warning, $writer ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundInExtendedClass
+            if ( ! $this->logger instanceof WSE_Export_Logger || empty( $warning ) || ! is_array( $warning ) ) {
+                return;
+            }
+
+            $message = isset( $warning['message'] ) ? $warning['message'] : '';
+            $code    = isset( $warning['code'] ) ? $warning['code'] : 'warning';
+            $data    = isset( $warning['data'] ) && is_array( $warning['data'] ) ? $warning['data'] : array();
+
+            if ( isset( $warning['code'] ) ) {
+                $data['code'] = $warning['code'];
+            }
+
+            $this->logger->log( 'warning', $message, $data );
+            $this->logger->record_failure( $code, $message, $data, 'warning' );
+        }
+
+        /**
+         * Removes logger hooks once the run is complete.
+         *
+         * @return void
+         */
+        protected function teardown_logger() {
+            remove_action( 'wse_csv_writer_warning', array( $this, 'handle_writer_warning' ), 10 );
+            $this->logger = null;
         }
 
         /**
@@ -541,45 +952,70 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
          * @return array|WP_Error
          */
         protected function iterate() {
-            $page         = isset( $this->job['last_page'] ) ? max( 1, (int) $this->job['last_page'] ) : 1;
-            $limit        = max( 1, (int) $this->batch_size );
-            $items_count  = 0;
-            $paused       = false;
+            $page            = isset( $this->job['last_page'] ) ? max( 1, (int) $this->job['last_page'] ) : 1;
+            $limit           = max( 1, (int) $this->batch_size );
+            $items_count     = 0;
+            $paused          = false;
+            $resume_from_id  = isset( $this->job['last_product_id'] ) ? (int) $this->job['last_product_id'] : 0;
+            $include_images  = $this->writer instanceof WSE_Shopify_CSV_Writer ? $this->writer->includes_images() : true;
 
             do {
-                $query_scope          = $this->scope;
-                $query_scope['limit'] = $limit;
-                $query_scope['page']  = $page;
+                $query_scope                    = $this->scope;
+                $query_scope['limit']           = $limit;
+                $query_scope['page']            = $page;
+                $query_scope['include_images']  = $include_images;
 
-                $result = wse_load_products( $query_scope );
+                if ( $resume_from_id > 0 ) {
+                    $query_scope['resume_from_id'] = $resume_from_id;
+                }
 
-                $items = isset( $result['items'] ) && is_array( $result['items'] ) ? $result['items'] : array();
-                $items_count = count( $items );
+                $stream_error = null;
+
+                $result = wse_stream_products(
+                    $query_scope,
+                    function ( $package ) use ( &$stream_error, &$paused, &$resume_from_id ) {
+                        $product_id = isset( $package['meta']['product']['id'] ) ? (int) $package['meta']['product']['id'] : 0;
+
+                        if ( $product_id && $product_id <= (int) $this->job['last_product_id'] ) {
+                            return true;
+                        }
+
+                        $written = $this->write_package( $package );
+
+                        if ( is_wp_error( $written ) ) {
+                            $stream_error = $written;
+                            return false;
+                        }
+
+                        if ( $product_id ) {
+                            $resume_from_id = $product_id;
+                        }
+
+                        if ( $this->should_pause() ) {
+                            $paused = true;
+                            return false;
+                        }
+
+                        return true;
+                    }
+                );
+
+                if ( $stream_error instanceof WP_Error ) {
+                    return $this->fail_job( $stream_error );
+                }
+
+                $items_count = isset( $result['query_count'] ) ? (int) $result['query_count'] : 0;
+
+                if ( $paused || ( isset( $result['stopped'] ) && $result['stopped'] ) ) {
+                    break;
+                }
 
                 if ( 0 === $items_count ) {
                     break;
                 }
 
-                foreach ( $items as $package ) {
-                    $product_id = isset( $package['meta']['product']['id'] ) ? (int) $package['meta']['product']['id'] : 0;
-
-                    if ( $product_id && $product_id <= (int) $this->job['last_product_id'] ) {
-                        continue;
-                    }
-
-                    $written = $this->write_package( $package );
-
-                    if ( is_wp_error( $written ) ) {
-                        return $this->fail_job( $written );
-                    }
-
-                    if ( $this->should_pause() ) {
-                        $paused = true;
-                        break 2;
-                    }
-                }
-
                 $page++;
+                $resume_from_id = 0;
             } while ( $items_count >= $limit );
 
             $this->job['last_page'] = $page;
@@ -596,6 +1032,56 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
         }
 
         /**
+         * Generates optional manifest files requested in the export settings.
+         *
+         * @return array|WP_Error
+         */
+        protected function generate_additional_manifests() {
+            $files = array();
+
+            if ( empty( $this->output_directory['path'] ) || ! is_array( $this->output_directory ) ) {
+                return $files;
+            }
+
+            $directory = array(
+                'path' => $this->output_directory['path'],
+                'url'  => isset( $this->output_directory['url'] ) ? $this->output_directory['url'] : '',
+            );
+
+            $delimiter = $this->file_delimiter;
+
+            if ( '' === $delimiter ) {
+                $delimiter = ',';
+            }
+
+            if ( ! empty( $this->settings['include_collections'] ) && function_exists( 'wse_generate_collections_manifest' ) ) {
+                $collections = wse_generate_collections_manifest( $this->scope, $directory, $delimiter );
+
+                if ( is_wp_error( $collections ) ) {
+                    return $collections;
+                }
+
+                if ( ! empty( $collections ) ) {
+                    $files[] = $collections;
+                }
+            }
+
+            if ( ! empty( $this->settings['include_redirects'] ) && function_exists( 'wse_generate_redirects_manifest' ) ) {
+                $redirects = wse_generate_redirects_manifest( $this->scope, $directory, $delimiter );
+
+                if ( is_wp_error( $redirects ) ) {
+                    return $redirects;
+                }
+
+                if ( ! empty( $redirects ) ) {
+                    $files[] = $redirects;
+                }
+            }
+
+            return $files;
+        }
+
+        /**
          * Writes a single product package to the streaming writer.
          *
          * @param array $package Product package.
@@ -603,11 +1089,29 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
          * @return true|WP_Error
          */
         protected function write_package( array $package ) {
+            $product_row  = isset( $package['product'] ) && is_array( $package['product'] ) ? $package['product'] : array();
+            $product_meta = isset( $package['meta']['product'] ) && is_array( $package['meta']['product'] ) ? $package['meta']['product'] : array();
+            $handle       = isset( $product_row['Handle'] ) ? (string) $product_row['Handle'] : '';
+            $product_id   = isset( $product_meta['id'] ) ? (int) $product_meta['id'] : 0;
+
             if ( ! $this->writer->write_product_package( $package ) ) {
                 $error = $this->writer->get_last_error();
 
                 if ( ! $error instanceof WP_Error ) {
                     $error = new WP_Error( 'wse_writer_failure', __( 'Failed to write the Shopify export.', 'woo-to-shopify-exporter' ) );
+                }
+
+                if ( $this->logger instanceof WSE_Export_Logger ) {
+                    $failure = $this->writer instanceof WSE_Shopify_CSV_Writer ? $this->writer->get_last_failure() : array();
+                    $message = isset( $failure['message'] ) ? $failure['message'] : $error->get_error_message();
+                    $code    = isset( $failure['code'] ) ? $failure['code'] : $error->get_error_code();
+                    $data    = isset( $failure['data'] ) && is_array( $failure['data'] ) ? $failure['data'] : array();
+
+                    $data['handle']     = $handle;
+                    $data['product_id'] = $product_id;
+
+                    $this->logger->log( 'error', $message, $data );
+                    $this->logger->record_failure( $code, $message, $data );
                 }
 
                 return $error;
@@ -620,8 +1124,8 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
             $this->job['status']        = 'running';
             $this->job['last_updated']  = time();
 
-            if ( isset( $package['meta']['product']['id'] ) ) {
-                $this->job['last_product_id'] = (int) $package['meta']['product']['id'];
+            if ( $product_id ) {
+                $this->job['last_product_id'] = $product_id;
             }
 
             $variants = isset( $package['variants'] ) && is_array( $package['variants'] ) ? $package['variants'] : array();
@@ -634,6 +1138,25 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
             );
 
             $this->persist_job_state();
+
+            if ( $this->logger instanceof WSE_Export_Logger ) {
+                $variant_count = count( $variants );
+                $this->logger->log(
+                    'info',
+                    sprintf(
+                        /* translators: 1: product handle, 2: product ID. */
+                        __( 'Processed product %1$s (ID %2$d).', 'woo-to-shopify-exporter' ),
+                        $handle ? $handle : __( '(no handle)', 'woo-to-shopify-exporter' ),
+                        $product_id
+                    ),
+                    array(
+                        'handle'      => $handle,
+                        'product_id'  => $product_id,
+                        'variants'    => $variant_count,
+                        'rows_written'=> $this->writer->get_total_rows_written(),
+                    )
+                );
+            }
 
             return true;
         }
@@ -681,7 +1204,18 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
                 return $this->fail_job( $error );
             }
 
-            $files = $this->writer->get_files();
+            $files       = $this->writer->get_files();
+            $additional  = $this->generate_additional_manifests();
+
+            if ( is_wp_error( $additional ) ) {
+                return $this->fail_job( $additional );
+            }
+
+            if ( ! empty( $additional ) ) {
+                $files = array_merge( $files, $additional );
+            }
+
+            $files = array_values( $files );
             $count = count( $files );
 
             $this->job['files']        = $files;
@@ -706,6 +1240,18 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
             );
 
             $this->persist_job_state();
+
+            if ( $this->logger instanceof WSE_Export_Logger ) {
+                $this->logger->log(
+                    'info',
+                    __( 'Export job completed successfully.', 'woo-to-shopify-exporter' ),
+                    array(
+                        'products' => $products,
+                        'files'    => $count,
+                        'rows'     => $this->job['row_count'],
+                    )
+                );
+            }
 
             return $this->job;
         }
@@ -734,6 +1280,18 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
 
             $this->persist_job_state();
 
+            if ( $this->logger instanceof WSE_Export_Logger ) {
+                $this->logger->log(
+                    'info',
+                    __( 'Export job paused.', 'woo-to-shopify-exporter' ),
+                    array(
+                        'reason'   => $message,
+                        'products' => isset( $this->job['product_count'] ) ? (int) $this->job['product_count'] : 0,
+                        'rows'     => $this->job['row_count'],
+                    )
+                );
+            }
+
             return $this->job;
         }
 
@@ -756,6 +1314,17 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
             }
 
             $this->persist_job_state();
+
+            if ( $this->logger instanceof WSE_Export_Logger ) {
+                $context = array(
+                    'code'     => $error->get_error_code(),
+                    'products' => isset( $this->job['product_count'] ) ? (int) $this->job['product_count'] : 0,
+                    'rows'     => isset( $this->job['row_count'] ) ? (int) $this->job['row_count'] : 0,
+                );
+
+                $this->logger->log( 'error', $error->get_error_message(), $context );
+                $this->logger->record_failure( $error->get_error_code(), $error->get_error_message(), $context );
+            }
 
             return $error;
         }
@@ -805,6 +1374,12 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
                 $delimiter = ',';
             }
 
+            $this->output_directory = array(
+                'path' => isset( $directory['path'] ) ? $directory['path'] : '',
+                'url'  => isset( $directory['url'] ) ? $directory['url'] : '',
+            );
+            $this->file_delimiter   = $delimiter;
+
             $writer_args = array(
                 'delimiter'         => $delimiter,
                 'output_dir'        => $directory['path'],
@@ -819,6 +1394,12 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
                 $writer_args = array_merge( $writer_args, $this->writer_overrides );
             }
 
+            $this->output_directory = array(
+                'path' => isset( $writer_args['output_dir'] ) ? $writer_args['output_dir'] : $this->output_directory['path'],
+                'url'  => isset( $writer_args['base_url'] ) ? $writer_args['base_url'] : $this->output_directory['url'],
+            );
+            $this->file_delimiter   = isset( $writer_args['delimiter'] ) && '' !== $writer_args['delimiter'] ? $writer_args['delimiter'] : $this->file_delimiter;
+
             $this->writer = new WSE_Shopify_CSV_Writer( $writer_args );
 
             return true;
@@ -830,6 +1411,8 @@ if ( ! class_exists( 'WSE_Export_Orchestrator' ) ) {
          * @return void
          */
         protected function release_lock() {
+            $this->teardown_logger();
+
             if ( $this->lock_acquired && ! empty( $this->job['id'] ) ) {
                 wse_release_export_mutex( $this->job['id'] );
                 $this->lock_acquired = false;
