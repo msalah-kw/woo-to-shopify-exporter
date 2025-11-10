@@ -359,13 +359,20 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
             $option_definitions = $this->collect_option_definitions( $product );
             $rows               = array();
             $extra_variant_tags = array();
+            $used_skus          = array();
 
             if ( empty( $variation_meta ) ) {
                 $variation_meta = array( $this->variation_meta_from_simple_product( $product, $product_data ) );
             }
 
-            foreach ( $variation_meta as $meta ) {
-                $rows[] = $this->build_variant_row_from_meta( $meta, $product_data, $option_definitions, $extra_variant_tags );
+            $flattened_meta = $this->flatten_variation_meta( $variation_meta, $option_definitions, $product_data );
+
+            if ( empty( $flattened_meta ) ) {
+                $flattened_meta = $variation_meta;
+            }
+
+            foreach ( array_values( $flattened_meta ) as $index => $meta ) {
+                $rows[] = $this->build_variant_row_from_meta( $meta, $product_data, $option_definitions, $extra_variant_tags, $used_skus, $index );
             }
 
             $extra_variant_tags = array_values( array_unique( array_filter( $extra_variant_tags ) ) );
@@ -382,7 +389,7 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
          *
          * @return array
          */
-        protected function build_variant_row_from_meta( array $meta, array $product_data, array $option_definitions, array &$extra_variant_tags ) {
+        protected function build_variant_row_from_meta( array $meta, array $product_data, array $option_definitions, array &$extra_variant_tags, array &$used_skus, $position ) {
             $partition      = $this->partition_variant_attributes( isset( $meta['attributes'] ) ? $meta['attributes'] : array(), $option_definitions );
             $attributes_map = $partition['primary'];
 
@@ -421,6 +428,7 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
             $requires_value = $requires_ship ? 'TRUE' : 'FALSE';
             $tax_enabled    = isset( $taxes['enabled'] ) ? (bool) $taxes['enabled'] : wc_tax_enabled();
             $taxable_value  = ( $tax_enabled && 'none' !== $tax_status ) ? 'TRUE' : 'FALSE';
+            $sku            = $this->resolve_variant_sku( $sku, $meta, $product_data, $used_skus, $position );
 
             $row = array(
                 'Handle'                => $product_data['handle'],
@@ -465,6 +473,391 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
             }
 
             return $row;
+        }
+
+        /**
+         * Flattens variation metadata using a cartesian expansion of option values.
+         *
+         * @param array $variation_meta   Variation metadata entries.
+         * @param array $option_definitions Shopify option definitions.
+         * @param array $product_data     Normalized product data.
+         *
+         * @return array
+         */
+        protected function flatten_variation_meta( array $variation_meta, array $option_definitions, array $product_data ) {
+            if ( empty( $variation_meta ) || empty( $option_definitions ) ) {
+                return $variation_meta;
+            }
+
+            $value_sets   = $this->collect_variant_value_sets( $variation_meta, $option_definitions, $product_data );
+            $combinations = $this->build_cartesian_attribute_sets( $value_sets, $option_definitions );
+            $meta_index   = array();
+
+            foreach ( $variation_meta as $meta ) {
+                $signature = $this->build_variant_signature_from_meta( $meta, $option_definitions );
+
+                if ( '' === $signature ) {
+                    $signature = 'variant::' . ( isset( $meta['id'] ) ? (int) $meta['id'] : uniqid( 'variant', true ) );
+                }
+
+                if ( ! isset( $meta_index[ $signature ] ) ) {
+                    $meta_index[ $signature ] = $meta;
+                }
+            }
+
+            $flattened       = array();
+            $consumed_signatures = array();
+
+            foreach ( $combinations as $attributes_map ) {
+                $signature = $this->build_variant_signature_from_attributes_map( $attributes_map, $option_definitions );
+
+                if ( isset( $meta_index[ $signature ] ) ) {
+                    $meta                       = $meta_index[ $signature ];
+                    $meta['attributes']         = array_values( array_filter( $attributes_map ) );
+                    $flattened[]                = $meta;
+                    $consumed_signatures[ $signature ] = true;
+                }
+            }
+
+            foreach ( $meta_index as $signature => $meta ) {
+                if ( isset( $consumed_signatures[ $signature ] ) ) {
+                    continue;
+                }
+
+                $flattened[] = $meta;
+            }
+
+            return $flattened;
+        }
+
+        /**
+         * Collects unique attribute values for option definitions.
+         *
+         * @param array $variation_meta   Variation metadata entries.
+         * @param array $option_definitions Shopify option definitions.
+         * @param array $product_data     Normalized product data.
+         *
+         * @return array
+         */
+        protected function collect_variant_value_sets( array $variation_meta, array $option_definitions, array $product_data ) {
+            $sets = array();
+
+            foreach ( $option_definitions as $definition ) {
+                $slug         = isset( $definition['slug'] ) ? $definition['slug'] : '';
+                $sets[ $slug ] = array();
+            }
+
+            foreach ( $variation_meta as $meta ) {
+                $attributes = isset( $meta['attributes'] ) ? $meta['attributes'] : array();
+
+                foreach ( $attributes as $attribute ) {
+                    $slug = isset( $attribute['slug'] ) ? $attribute['slug'] : '';
+
+                    if ( '' === $slug || ! isset( $sets[ $slug ] ) ) {
+                        continue;
+                    }
+
+                    $key = $this->variant_value_key( $slug, $attribute );
+
+                    if ( '' === $key ) {
+                        continue;
+                    }
+
+                    $sets[ $slug ][ $key ] = $attribute;
+                }
+            }
+
+            if ( ! empty( $product_data['attributes'] ) ) {
+                foreach ( (array) $product_data['attributes'] as $attribute ) {
+                    if ( empty( $attribute['variation'] ) ) {
+                        continue;
+                    }
+
+                    $slug = wc_variation_attribute_name( isset( $attribute['slug'] ) ? $attribute['slug'] : '' );
+
+                    if ( '' === $slug || ! isset( $sets[ $slug ] ) ) {
+                        continue;
+                    }
+
+                    foreach ( (array) $attribute['options'] as $option ) {
+                        $entry = array(
+                            'slug'       => $slug,
+                            'value'      => $option,
+                            'value_slug' => sanitize_title( $option ),
+                        );
+
+                        $key = $this->variant_value_key( $slug, $entry );
+
+                        if ( '' === $key ) {
+                            continue;
+                        }
+
+                        if ( ! isset( $sets[ $slug ][ $key ] ) ) {
+                            $sets[ $slug ][ $key ] = $entry;
+                        }
+                    }
+                }
+            }
+
+            foreach ( $sets as $slug => $values ) {
+                if ( ! empty( $values ) ) {
+                    continue;
+                }
+
+                if ( 'title' === $slug ) {
+                    $sets[ $slug ]['title::default'] = array(
+                        'slug'       => 'title',
+                        'value'      => __( 'Default Title', 'woo-to-shopify-exporter' ),
+                        'value_slug' => 'default',
+                    );
+                } else {
+                    $sets[ $slug ][ $slug . '::' ] = array(
+                        'slug'       => $slug,
+                        'value'      => '',
+                        'value_slug' => '',
+                    );
+                }
+            }
+
+            return $sets;
+        }
+
+        /**
+         * Produces a cartesian product of attribute sets keyed by option slug.
+         *
+         * @param array $value_sets        Attribute value sets keyed by slug.
+         * @param array $option_definitions Shopify option definitions.
+         *
+         * @return array
+         */
+        protected function build_cartesian_attribute_sets( array $value_sets, array $option_definitions ) {
+            $combinations = array( array() );
+
+            foreach ( $option_definitions as $definition ) {
+                $slug   = isset( $definition['slug'] ) ? $definition['slug'] : '';
+                $values = isset( $value_sets[ $slug ] ) ? array_values( $value_sets[ $slug ] ) : array();
+
+                if ( empty( $values ) ) {
+                    $values = array(
+                        array(
+                            'slug'       => $slug,
+                            'value'      => '',
+                            'value_slug' => '',
+                        ),
+                    );
+                }
+
+                $next = array();
+
+                foreach ( $combinations as $combination ) {
+                    foreach ( $values as $value ) {
+                        $candidate          = $combination;
+                        $candidate[ $slug ] = $value;
+                        $next[]             = $candidate;
+                    }
+                }
+
+                $combinations = $next;
+            }
+
+            return $combinations;
+        }
+
+        /**
+         * Builds a signature for variation metadata.
+         *
+         * @param array $meta               Variation metadata entry.
+         * @param array $option_definitions Shopify option definitions.
+         *
+         * @return string
+         */
+        protected function build_variant_signature_from_meta( array $meta, array $option_definitions ) {
+            $attributes   = isset( $meta['attributes'] ) ? $meta['attributes'] : array();
+            $attributes_map = array();
+
+            foreach ( $attributes as $attribute ) {
+                if ( empty( $attribute['slug'] ) ) {
+                    continue;
+                }
+
+                $attributes_map[ $attribute['slug'] ] = $attribute;
+            }
+
+            return $this->build_variant_signature_from_attributes_map( $attributes_map, $option_definitions );
+        }
+
+        /**
+         * Builds a signature from an attribute map keyed by option slug.
+         *
+         * @param array $attributes_map     Attribute map keyed by slug.
+         * @param array $option_definitions Shopify option definitions.
+         *
+         * @return string
+         */
+        protected function build_variant_signature_from_attributes_map( array $attributes_map, array $option_definitions ) {
+            $parts = array();
+
+            foreach ( $option_definitions as $definition ) {
+                $slug = isset( $definition['slug'] ) ? $definition['slug'] : '';
+
+                if ( '' === $slug ) {
+                    continue;
+                }
+
+                if ( isset( $attributes_map[ $slug ] ) && is_array( $attributes_map[ $slug ] ) ) {
+                    $parts[] = $this->variant_value_key( $slug, $attributes_map[ $slug ] );
+                } else {
+                    $parts[] = strtolower( $slug . '::' );
+                }
+            }
+
+            return implode( '|', $parts );
+        }
+
+        /**
+         * Generates a normalized key for a variant attribute value.
+         *
+         * @param string $slug      Attribute slug.
+         * @param array  $attribute Attribute data.
+         *
+         * @return string
+         */
+        protected function variant_value_key( $slug, array $attribute ) {
+            if ( '' === $slug ) {
+                return '';
+            }
+
+            $value_slug = isset( $attribute['value_slug'] ) ? $attribute['value_slug'] : '';
+            $value      = isset( $attribute['value'] ) ? $attribute['value'] : '';
+            $normalized = '' !== $value_slug ? $value_slug : $value;
+            $normalized = sanitize_title( (string) $normalized );
+
+            return strtolower( $slug . '::' . $normalized );
+        }
+
+        /**
+         * Resolves a SKU ensuring uniqueness and fallbacks when absent.
+         *
+         * @param string $sku         Original SKU value.
+         * @param array  $meta        Variation metadata entry.
+         * @param array  $product_data Normalized product data.
+         * @param array  $used_skus   Registry of used SKUs.
+         * @param int    $position    Variant index.
+         *
+         * @return string
+         */
+        protected function resolve_variant_sku( $sku, array $meta, array $product_data, array &$used_skus, $position ) {
+            $sku = trim( (string) $sku );
+
+            if ( '' !== $sku ) {
+                return $this->ensure_unique_sku( $sku, $used_skus );
+            }
+
+            $fallback = $this->generate_fallback_sku( $meta, $product_data, $position, $used_skus );
+
+            return $this->ensure_unique_sku( $fallback, $used_skus );
+        }
+
+        /**
+         * Ensures a SKU is unique by appending counters when necessary.
+         *
+         * @param string $candidate SKU candidate.
+         * @param array  $used_skus Registry of used SKUs.
+         *
+         * @return string
+         */
+        protected function ensure_unique_sku( $candidate, array &$used_skus ) {
+            $candidate  = '' !== $candidate ? $candidate : 'SKU';
+            $normalized = strtolower( $candidate );
+
+            if ( ! isset( $used_skus[ $normalized ] ) ) {
+                $used_skus[ $normalized ] = 1;
+
+                return $candidate;
+            }
+
+            $count       = $used_skus[ $normalized ];
+            $base        = $candidate;
+            $final       = $candidate;
+            $final_lower = $normalized;
+
+            do {
+                $count++;
+                $final       = $base . '-' . $count;
+                $final_lower = strtolower( $final );
+            } while ( isset( $used_skus[ $final_lower ] ) );
+
+            $used_skus[ $normalized ]  = $count;
+            $used_skus[ $final_lower ] = 1;
+
+            return $final;
+        }
+
+        /**
+         * Generates a fallback SKU from product and attribute context.
+         *
+         * @param array $meta         Variation metadata entry.
+         * @param array $product_data Normalized product data.
+         * @param int   $position     Variant index (zero based).
+         * @param array $used_skus    Registry of used SKUs.
+         *
+         * @return string
+         */
+        protected function generate_fallback_sku( array $meta, array $product_data, $position, array $used_skus ) {
+            $handle = isset( $product_data['handle'] ) ? $product_data['handle'] : '';
+            $base   = $this->normalize_sku_segment( $handle );
+
+            if ( '' === $base ) {
+                $base = 'PRODUCT';
+            }
+
+            $attribute_parts = array();
+
+            if ( ! empty( $meta['attributes'] ) ) {
+                foreach ( (array) $meta['attributes'] as $attribute ) {
+                    $value = '';
+
+                    if ( isset( $attribute['value_slug'] ) && '' !== $attribute['value_slug'] ) {
+                        $value = $attribute['value_slug'];
+                    } elseif ( isset( $attribute['value'] ) ) {
+                        $value = $attribute['value'];
+                    }
+
+                    $segment = $this->normalize_sku_segment( $value );
+
+                    if ( '' !== $segment ) {
+                        $attribute_parts[] = $segment;
+                    }
+                }
+            }
+
+            if ( empty( $attribute_parts ) ) {
+                $attribute_parts[] = str_pad( (string) ( $position + 1 ), 3, '0', STR_PAD_LEFT );
+            }
+
+            $candidate = $base . '-' . implode( '-', $attribute_parts );
+            $candidate = trim( $candidate, '-' );
+
+            if ( '' === $candidate ) {
+                $candidate = 'SKU-' . str_pad( (string) ( $position + 1 ), 3, '0', STR_PAD_LEFT );
+            }
+
+            return $candidate;
+        }
+
+        /**
+         * Normalizes a string segment for SKU composition.
+         *
+         * @param string $value Raw segment value.
+         *
+         * @return string
+         */
+        protected function normalize_sku_segment( $value ) {
+            $value = (string) $value;
+            $value = preg_replace( '/[^\p{L}\p{N}]+/u', '-', $value );
+            $value = trim( $value, '-' );
+
+            return strtoupper( $value );
         }
 
         /**
