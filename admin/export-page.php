@@ -45,10 +45,15 @@ function wse_render_export_page() {
         }
     }
 
-    $settings = wp_parse_args( $saved_settings, $default_settings );
-    $categories = wse_get_product_categories();
-    $tags       = wse_get_product_tags();
-    $statuses   = wse_get_product_statuses();
+    $settings    = wp_parse_args( $saved_settings, $default_settings );
+    $categories  = wse_get_product_categories();
+    $tags        = wse_get_product_tags();
+    $statuses    = wse_get_product_statuses();
+    $attributes  = wse_get_product_attributes();
+    $taxonomies  = wse_get_mappable_product_taxonomies();
+    $policy_opts = wse_get_inventory_policy_options();
+    $tracker_opts = wse_get_inventory_tracker_options();
+    $tax_behavior_opts = wse_get_tax_behavior_options();
     ?>
     <div class="wrap wse-export-page">
         <h1><?php esc_html_e( 'Woo to Shopify Exporter', 'woo-to-shopify-exporter' ); ?></h1>
@@ -138,8 +143,8 @@ function wse_render_export_page() {
                 <li class="wse-step" data-step="2">
                     <header>
                         <span class="wse-step-index">2</span>
-                        <h2><?php esc_html_e( 'Select field mapping preset', 'woo-to-shopify-exporter' ); ?></h2>
-                        <p><?php esc_html_e( 'Pick the field layout that matches the Shopify import template you plan to use.', 'woo-to-shopify-exporter' ); ?></p>
+                        <h2><?php esc_html_e( 'Map Shopify fields and policies', 'woo-to-shopify-exporter' ); ?></h2>
+                        <p><?php esc_html_e( 'Choose how WooCommerce attributes map to Shopify along with default stock and tax policies.', 'woo-to-shopify-exporter' ); ?></p>
                     </header>
 
                     <div class="wse-fieldset">
@@ -161,6 +166,62 @@ function wse_render_export_page() {
                         <p class="description"><?php esc_html_e( 'Provide a comma-separated list of Shopify columns in the order you would like to export them.', 'woo-to-shopify-exporter' ); ?></p>
                     </div>
 
+                    <div class="wse-fieldset wse-columns">
+                        <div class="wse-column">
+                            <label for="wse-vendor-attribute" class="wse-field-label"><?php esc_html_e( 'Vendor source attribute', 'woo-to-shopify-exporter' ); ?></label>
+                            <select id="wse-vendor-attribute" name="vendor_attribute" class="wse-select">
+                                <option value=""><?php esc_html_e( 'Use detected brand (default)', 'woo-to-shopify-exporter' ); ?></option>
+                                <?php foreach ( $attributes as $attribute ) : ?>
+                                    <option value="<?php echo esc_attr( $attribute['slug'] ); ?>" <?php selected( $settings['vendor_attribute'], $attribute['slug'] ); ?>><?php echo esc_html( $attribute['label'] ); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <p class="description"><?php esc_html_e( 'Choose which WooCommerce attribute should populate the Shopify Vendor column when available.', 'woo-to-shopify-exporter' ); ?></p>
+                        </div>
+
+                        <div class="wse-column">
+                            <label for="wse-type-taxonomy" class="wse-field-label"><?php esc_html_e( 'Product type taxonomy', 'woo-to-shopify-exporter' ); ?></label>
+                            <select id="wse-type-taxonomy" name="type_taxonomy" class="wse-select">
+                                <option value=""><?php esc_html_e( 'Derive automatically', 'woo-to-shopify-exporter' ); ?></option>
+                                <?php foreach ( $taxonomies as $taxonomy ) : ?>
+                                    <option value="<?php echo esc_attr( $taxonomy['slug'] ); ?>" <?php selected( $settings['type_taxonomy'], $taxonomy['slug'] ); ?>><?php echo esc_html( $taxonomy['label'] ); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <p class="description"><?php esc_html_e( 'Pick the taxonomy whose primary term should map to the Shopify Type column.', 'woo-to-shopify-exporter' ); ?></p>
+                        </div>
+                    </div>
+
+                    <div class="wse-fieldset wse-columns">
+                        <div class="wse-column">
+                            <label for="wse-inventory-policy" class="wse-field-label"><?php esc_html_e( 'Inventory policy', 'woo-to-shopify-exporter' ); ?></label>
+                            <select id="wse-inventory-policy" name="inventory_policy" class="wse-select">
+                                <?php foreach ( $policy_opts as $value => $label ) : ?>
+                                    <option value="<?php echo esc_attr( $value ); ?>" <?php selected( $settings['inventory_policy'], $value ); ?>><?php echo esc_html( $label ); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <p class="description"><?php esc_html_e( 'Control whether Shopify should deny or continue sales when stock reaches zero.', 'woo-to-shopify-exporter' ); ?></p>
+                        </div>
+
+                        <div class="wse-column">
+                            <label for="wse-inventory-tracker" class="wse-field-label"><?php esc_html_e( 'Inventory tracker', 'woo-to-shopify-exporter' ); ?></label>
+                            <select id="wse-inventory-tracker" name="inventory_tracker" class="wse-select">
+                                <?php foreach ( $tracker_opts as $value => $label ) : ?>
+                                    <option value="<?php echo esc_attr( $value ); ?>" <?php selected( $settings['inventory_tracker'], $value ); ?>><?php echo esc_html( $label ); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <p class="description"><?php esc_html_e( 'Set which inventory system manages stock counts for exported products.', 'woo-to-shopify-exporter' ); ?></p>
+                        </div>
+
+                        <div class="wse-column">
+                            <label for="wse-tax-behavior" class="wse-field-label"><?php esc_html_e( 'Tax behavior', 'woo-to-shopify-exporter' ); ?></label>
+                            <select id="wse-tax-behavior" name="tax_behavior" class="wse-select">
+                                <?php foreach ( $tax_behavior_opts as $value => $label ) : ?>
+                                    <option value="<?php echo esc_attr( $value ); ?>" <?php selected( $settings['tax_behavior'], $value ); ?>><?php echo esc_html( $label ); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <p class="description"><?php esc_html_e( 'Define whether exported variants should be marked taxable by default.', 'woo-to-shopify-exporter' ); ?></p>
+                        </div>
+                    </div>
+
                     <footer class="wse-step-navigation">
                         <button type="button" class="button button-secondary wse-previous-step" data-previous="1"><?php esc_html_e( 'Back', 'woo-to-shopify-exporter' ); ?></button>
                         <button type="button" class="button button-primary wse-next-step" data-next="3"><?php esc_html_e( 'Continue to output options', 'woo-to-shopify-exporter' ); ?></button>
@@ -174,21 +235,40 @@ function wse_render_export_page() {
                         <p><?php esc_html_e( 'Choose how your export file should be generated.', 'woo-to-shopify-exporter' ); ?></p>
                     </header>
 
-                    <div class="wse-fieldset">
-                        <label class="wse-checkbox">
-                            <input type="checkbox" name="include_images" value="1" <?php checked( $settings['include_images'], true ); ?> />
-                            <span><?php esc_html_e( 'Include product gallery images', 'woo-to-shopify-exporter' ); ?></span>
-                        </label>
+                    <div class="wse-fieldset wse-columns">
+                        <div class="wse-column">
+                            <label class="wse-checkbox">
+                                <input type="checkbox" name="include_images" value="1" <?php checked( $settings['include_images'], true ); ?> />
+                                <span><?php esc_html_e( 'Include product gallery images', 'woo-to-shopify-exporter' ); ?></span>
+                            </label>
 
-                        <label class="wse-checkbox">
-                            <input type="checkbox" name="include_inventory" value="1" <?php checked( $settings['include_inventory'], true ); ?> />
-                            <span><?php esc_html_e( 'Include inventory counts', 'woo-to-shopify-exporter' ); ?></span>
-                        </label>
+                            <label class="wse-checkbox">
+                                <input type="checkbox" name="include_collections" value="1" <?php checked( $settings['include_collections'], true ); ?> />
+                                <span><?php esc_html_e( 'Generate collections.csv', 'woo-to-shopify-exporter' ); ?></span>
+                            </label>
 
-                        <label class="wse-checkbox">
-                            <input type="checkbox" name="include_variations" value="1" <?php checked( $settings['include_variations'], true ); ?> />
-                            <span><?php esc_html_e( 'Include variation-level rows', 'woo-to-shopify-exporter' ); ?></span>
-                        </label>
+                            <label class="wse-checkbox">
+                                <input type="checkbox" name="include_redirects" value="1" <?php checked( $settings['include_redirects'], true ); ?> />
+                                <span><?php esc_html_e( 'Generate redirects.csv', 'woo-to-shopify-exporter' ); ?></span>
+                            </label>
+                        </div>
+
+                        <div class="wse-column">
+                            <label class="wse-checkbox">
+                                <input type="checkbox" name="include_inventory" value="1" <?php checked( $settings['include_inventory'], true ); ?> />
+                                <span><?php esc_html_e( 'Include inventory counts', 'woo-to-shopify-exporter' ); ?></span>
+                            </label>
+
+                            <label class="wse-checkbox">
+                                <input type="checkbox" name="include_variations" value="1" <?php checked( $settings['include_variations'], true ); ?> />
+                                <span><?php esc_html_e( 'Include variation-level rows', 'woo-to-shopify-exporter' ); ?></span>
+                            </label>
+
+                            <label class="wse-checkbox">
+                                <input type="checkbox" name="copy_images" value="1" <?php checked( $settings['copy_images'], true ); ?> />
+                                <span><?php esc_html_e( 'Copy images to export bundle', 'woo-to-shopify-exporter' ); ?></span>
+                            </label>
+                        </div>
                     </div>
 
                     <div class="wse-fieldset wse-columns">
@@ -210,10 +290,24 @@ function wse_render_export_page() {
                         </div>
                     </div>
 
-                    <div class="wse-fieldset">
-                        <label for="wse-output-filename" class="wse-field-label"><?php esc_html_e( 'File name', 'woo-to-shopify-exporter' ); ?></label>
-                        <input type="text" id="wse-output-filename" name="file_name" class="regular-text" value="<?php echo esc_attr( $settings['file_name'] ); ?>" />
-                        <p class="description"><?php esc_html_e( 'The generated export file will use this name.', 'woo-to-shopify-exporter' ); ?></p>
+                    <div class="wse-fieldset wse-columns">
+                        <div class="wse-column">
+                            <label for="wse-batch-size" class="wse-field-label"><?php esc_html_e( 'Batch size', 'woo-to-shopify-exporter' ); ?></label>
+                            <input type="number" id="wse-batch-size" name="batch_size" min="50" max="2000" step="50" class="small-text" value="<?php echo esc_attr( $settings['batch_size'] ); ?>" />
+                            <p class="description"><?php esc_html_e( 'Number of product rows processed per batch.', 'woo-to-shopify-exporter' ); ?></p>
+                        </div>
+
+                        <div class="wse-column">
+                            <label for="wse-split-threshold" class="wse-field-label"><?php esc_html_e( 'Split file at (MB)', 'woo-to-shopify-exporter' ); ?></label>
+                            <input type="number" id="wse-split-threshold" name="split_threshold" min="5" max="500" step="5" class="small-text" value="<?php echo esc_attr( $settings['split_threshold'] ); ?>" />
+                            <p class="description"><?php esc_html_e( 'Start a new CSV once the active file exceeds this size.', 'woo-to-shopify-exporter' ); ?></p>
+                        </div>
+
+                        <div class="wse-column">
+                            <label for="wse-output-filename" class="wse-field-label"><?php esc_html_e( 'Base file name', 'woo-to-shopify-exporter' ); ?></label>
+                            <input type="text" id="wse-output-filename" name="file_name" class="regular-text" value="<?php echo esc_attr( $settings['file_name'] ); ?>" />
+                            <p class="description"><?php esc_html_e( 'Exported files will use this name with automatic suffixes.', 'woo-to-shopify-exporter' ); ?></p>
+                        </div>
                     </div>
 
                     <footer class="wse-step-navigation">
@@ -288,15 +382,26 @@ function wse_get_default_export_settings() {
         'export_scope'       => 'all',
         'scope_categories'   => array(),
         'scope_tags'         => array(),
+        'scope_ids'          => array(),
         'scope_status'       => array( 'publish' ),
         'field_preset'       => 'shopify-default',
         'custom_fields'      => '',
+        'vendor_attribute'   => '',
+        'type_taxonomy'      => '',
+        'inventory_policy'   => 'respect',
+        'inventory_tracker'  => 'auto',
+        'tax_behavior'       => 'auto',
         'include_images'     => true,
+        'include_collections'=> false,
+        'include_redirects'  => false,
         'include_inventory'  => true,
         'include_variations' => true,
+        'copy_images'        => false,
         'file_format'        => 'csv',
         'delimiter'          => ',',
         'file_name'          => sprintf( 'shopify-export-%s.csv', gmdate( 'Y-m-d' ) ),
+        'batch_size'         => 500,
+        'split_threshold'    => 50,
     );
 }
 
@@ -344,6 +449,18 @@ function wse_sanitize_export_settings( array $source ) {
         $sanitized['scope_tags'] = array_map( 'absint', $source['scope_tags'] );
     }
 
+    $sanitized['scope_ids'] = array();
+    if ( ! empty( $source['scope_ids'] ) ) {
+        if ( is_array( $source['scope_ids'] ) ) {
+            $sanitized['scope_ids'] = array_map( 'absint', $source['scope_ids'] );
+        } else {
+            $ids = array_map( 'trim', explode( ',', (string) $source['scope_ids'] ) );
+            $sanitized['scope_ids'] = array_map( 'absint', $ids );
+        }
+
+        $sanitized['scope_ids'] = array_values( array_filter( $sanitized['scope_ids'] ) );
+    }
+
     $sanitized['scope_status'] = array();
     if ( ! empty( $source['scope_status'] ) && is_array( $source['scope_status'] ) ) {
         $sanitized['scope_status'] = array_map( 'sanitize_key', $source['scope_status'] );
@@ -352,9 +469,30 @@ function wse_sanitize_export_settings( array $source ) {
     $sanitized['field_preset'] = isset( $source['field_preset'] ) ? sanitize_key( $source['field_preset'] ) : $default['field_preset'];
     $sanitized['custom_fields'] = isset( $source['custom_fields'] ) ? wse_sanitize_textarea( $source['custom_fields'] ) : $default['custom_fields'];
 
+    $sanitized['vendor_attribute'] = isset( $source['vendor_attribute'] ) ? sanitize_key( $source['vendor_attribute'] ) : '';
+    $sanitized['type_taxonomy']   = isset( $source['type_taxonomy'] ) ? sanitize_key( $source['type_taxonomy'] ) : '';
+
+    $sanitized['inventory_policy'] = isset( $source['inventory_policy'] ) ? sanitize_key( $source['inventory_policy'] ) : $default['inventory_policy'];
+    if ( ! array_key_exists( $sanitized['inventory_policy'], wse_get_inventory_policy_options() ) ) {
+        $sanitized['inventory_policy'] = $default['inventory_policy'];
+    }
+
+    $sanitized['inventory_tracker'] = isset( $source['inventory_tracker'] ) ? sanitize_key( $source['inventory_tracker'] ) : $default['inventory_tracker'];
+    if ( ! array_key_exists( $sanitized['inventory_tracker'], wse_get_inventory_tracker_options() ) ) {
+        $sanitized['inventory_tracker'] = $default['inventory_tracker'];
+    }
+
+    $sanitized['tax_behavior'] = isset( $source['tax_behavior'] ) ? sanitize_key( $source['tax_behavior'] ) : $default['tax_behavior'];
+    if ( ! array_key_exists( $sanitized['tax_behavior'], wse_get_tax_behavior_options() ) ) {
+        $sanitized['tax_behavior'] = $default['tax_behavior'];
+    }
+
     $sanitized['include_images']     = ! empty( $source['include_images'] );
+    $sanitized['include_collections']= ! empty( $source['include_collections'] );
+    $sanitized['include_redirects']  = ! empty( $source['include_redirects'] );
     $sanitized['include_inventory']  = ! empty( $source['include_inventory'] );
     $sanitized['include_variations'] = ! empty( $source['include_variations'] );
+    $sanitized['copy_images']        = ! empty( $source['copy_images'] );
 
     $allowed_formats = array( 'csv', 'tsv', 'json' );
     $format = isset( $source['file_format'] ) ? sanitize_key( $source['file_format'] ) : $default['file_format'];
@@ -368,6 +506,12 @@ function wse_sanitize_export_settings( array $source ) {
     if ( empty( $sanitized['file_name'] ) ) {
         $sanitized['file_name'] = $default['file_name'];
     }
+
+    $batch_size = isset( $source['batch_size'] ) ? (int) $source['batch_size'] : $default['batch_size'];
+    $sanitized['batch_size'] = max( 50, min( 2000, $batch_size ) );
+
+    $split_threshold = isset( $source['split_threshold'] ) ? (int) $source['split_threshold'] : $default['split_threshold'];
+    $sanitized['split_threshold'] = max( 5, min( 500, $split_threshold ) );
 
     return $sanitized;
 }
@@ -513,6 +657,130 @@ function wse_get_product_statuses() {
 }
 
 /**
+ * Returns public product attributes.
+ *
+ * @return array[]
+ */
+function wse_get_product_attributes() {
+    if ( ! function_exists( 'wc_get_attribute_taxonomies' ) ) {
+        return array();
+    }
+
+    $taxonomies = wc_get_attribute_taxonomies();
+
+    if ( empty( $taxonomies ) ) {
+        return array();
+    }
+
+    $attributes = array_map(
+        static function ( $tax ) {
+            $slug = function_exists( 'wc_attribute_taxonomy_name' )
+                ? wc_attribute_taxonomy_name( $tax->attribute_name )
+                : 'pa_' . $tax->attribute_name;
+
+            return array(
+                'slug'  => $slug,
+                'label' => $tax->attribute_label,
+            );
+        },
+        $taxonomies
+    );
+
+    usort(
+        $attributes,
+        static function ( $a, $b ) {
+            return strnatcasecmp( $a['label'], $b['label'] );
+        }
+    );
+
+    return $attributes;
+}
+
+/**
+ * Returns taxonomies that can be mapped to Shopify product type.
+ *
+ * @return array[]
+ */
+function wse_get_mappable_product_taxonomies() {
+    $objects = get_object_taxonomies( 'product', 'objects' );
+
+    if ( empty( $objects ) || is_wp_error( $objects ) ) {
+        return array();
+    }
+
+    $excluded = array( 'product_type', 'product_visibility', 'product_shipping_class' );
+
+    $taxonomies = array();
+    foreach ( $objects as $taxonomy ) {
+        if ( in_array( $taxonomy->name, $excluded, true ) ) {
+            continue;
+        }
+
+        $taxonomies[] = array(
+            'slug'  => $taxonomy->name,
+            'label' => $taxonomy->label,
+        );
+    }
+
+    usort(
+        $taxonomies,
+        static function ( $a, $b ) {
+            return strnatcasecmp( $a['label'], $b['label'] );
+        }
+    );
+
+    return $taxonomies;
+}
+
+/**
+ * Provides inventory policy options.
+ *
+ * @return array
+ */
+function wse_get_inventory_policy_options() {
+    return apply_filters(
+        'wse_inventory_policy_options',
+        array(
+            'respect'  => __( 'Use WooCommerce backorder rules', 'woo-to-shopify-exporter' ),
+            'deny'     => __( 'Always deny when out of stock', 'woo-to-shopify-exporter' ),
+            'continue' => __( 'Always continue selling', 'woo-to-shopify-exporter' ),
+        )
+    );
+}
+
+/**
+ * Provides inventory tracker options.
+ *
+ * @return array
+ */
+function wse_get_inventory_tracker_options() {
+    return apply_filters(
+        'wse_inventory_tracker_options',
+        array(
+            'auto'    => __( 'Detect from WooCommerce stock settings', 'woo-to-shopify-exporter' ),
+            'shopify' => __( 'Force Shopify to track inventory', 'woo-to-shopify-exporter' ),
+            'none'    => __( 'Do not set a tracker', 'woo-to-shopify-exporter' ),
+        )
+    );
+}
+
+/**
+ * Provides tax behavior options.
+ *
+ * @return array
+ */
+function wse_get_tax_behavior_options() {
+    return apply_filters(
+        'wse_tax_behavior_options',
+        array(
+            'auto'   => __( 'Respect WooCommerce tax class', 'woo-to-shopify-exporter' ),
+            'taxable'=> __( 'Always mark variants as taxable', 'woo-to-shopify-exporter' ),
+            'nontax' => __( 'Always mark variants as non-taxable', 'woo-to-shopify-exporter' ),
+        )
+    );
+}
+
+/**
  * Provides a human readable status description.
  *
  * @param array $job Job information.
@@ -550,6 +818,16 @@ function wse_ajax_start_export() {
     $settings = wse_sanitize_export_settings( $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing
     wse_store_export_settings( $settings );
 
+    $overrides = array();
+
+    if ( ! empty( $settings['batch_size'] ) ) {
+        $overrides['batch_size'] = (int) $settings['batch_size'];
+    }
+
+    if ( ! empty( $settings['split_threshold'] ) ) {
+        $overrides['max_file_size'] = (int) $settings['split_threshold'] * 1024 * 1024;
+    }
+
     $job = array(
         'id'           => uniqid( 'wse_job_', true ),
         'status'       => 'queued',
@@ -558,15 +836,28 @@ function wse_ajax_start_export() {
         'created_at'   => time(),
         'last_updated' => time(),
         'settings'     => $settings,
+        'overrides'    => $overrides,
     );
 
     wse_store_active_job( $job );
+    $result = wse_run_export_job( $job );
+
+    if ( is_wp_error( $result ) ) {
+        $stored_job = wse_get_active_job();
+
+        wp_send_json_error(
+            array(
+                'message' => $result->get_error_message(),
+                'job'     => $stored_job,
+            )
+        );
+    }
 
     wp_send_json_success(
         array(
-            'job'      => $job,
+            'job'      => $result,
             'settings' => $settings,
-            'notice'   => __( 'Export request registered successfully.', 'woo-to-shopify-exporter' ),
+            'notice'   => isset( $result['message'] ) ? $result['message'] : __( 'Export completed successfully.', 'woo-to-shopify-exporter' ),
         )
     );
 }
@@ -616,10 +907,23 @@ function wse_ajax_resume_export() {
 
     wse_store_active_job( $job );
 
+    $result = wse_run_export_job( $job );
+
+    if ( is_wp_error( $result ) ) {
+        $stored_job = wse_get_active_job();
+
+        wp_send_json_error(
+            array(
+                'message' => $result->get_error_message(),
+                'job'     => $stored_job,
+            )
+        );
+    }
+
     wp_send_json_success(
         array(
-            'job'    => $job,
-            'notice' => __( 'Export job resumed successfully.', 'woo-to-shopify-exporter' ),
+            'job'    => $result,
+            'notice' => isset( $result['message'] ) ? $result['message'] : __( 'Export job resumed successfully.', 'woo-to-shopify-exporter' ),
         )
     );
 }

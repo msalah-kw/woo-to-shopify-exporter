@@ -18,6 +18,10 @@
             return;
         }
 
+        if (!wseAdmin.options) {
+            wseAdmin.options = { inventoryPolicy: {}, inventoryTracker: {}, taxBehavior: {} };
+        }
+
         const form = $('#wse-export-form');
         if (!form.length) {
             return;
@@ -428,18 +432,33 @@
 
         const scope = $('input[name="export_scope"]:checked').val();
         const preset = $('#wse-field-preset').val();
-        const fileName = $('#wse-output-filename').val();
+        const vendorAttribute = $('#wse-vendor-attribute').val();
+        const vendorLabel = $('#wse-vendor-attribute option:selected').text();
+        const typeTaxonomy = $('#wse-type-taxonomy').val();
+        const typeLabel = $('#wse-type-taxonomy option:selected').text();
+        const inventoryPolicy = $('#wse-inventory-policy').val();
+        const inventoryTracker = $('#wse-inventory-tracker').val();
+        const taxBehavior = $('#wse-tax-behavior').val();
         const includeImages = $('input[name="include_images"]').is(':checked');
+        const includeCollections = $('input[name="include_collections"]').is(':checked');
+        const includeRedirects = $('input[name="include_redirects"]').is(':checked');
         const includeInventory = $('input[name="include_inventory"]').is(':checked');
         const includeVariations = $('input[name="include_variations"]').is(':checked');
+        const copyImages = $('input[name="copy_images"]').is(':checked');
         const format = $('#wse-output-format').val();
         const delimiter = $('#wse-output-delimiter').val();
+        const fileName = $('#wse-output-filename').val();
+        const batchSize = parseInt($('#wse-batch-size').val(), 10) || 0;
+        const splitThreshold = parseInt($('#wse-split-threshold').val(), 10) || 0;
 
         const summary = $('<dl />', { class: 'wse-summary-list' });
         summary.append(renderSummaryRow(wseAdmin.strings.summaryScope, describeScope(scope)));
         summary.append(renderSummaryRow(wseAdmin.strings.summaryPreset, describePreset(preset)));
-        summary.append(renderSummaryRow(wseAdmin.strings.summaryOutput, describeOutput(includeImages, includeInventory, includeVariations, format, delimiter)));
-        summary.append(renderSummaryRow(wseAdmin.strings.summaryFile, fileName || '—'));
+        summary.append(renderSummaryRow(wseAdmin.strings.summaryVendorType, describeVendorType(vendorAttribute, vendorLabel, typeTaxonomy, typeLabel)));
+        summary.append(renderSummaryRow(wseAdmin.strings.summaryInventory, describeInventory(inventoryPolicy, inventoryTracker, taxBehavior)));
+        summary.append(renderSummaryRow(wseAdmin.strings.summaryOutput, describeExtras(includeImages, includeInventory, includeVariations, includeCollections, includeRedirects, copyImages)));
+        summary.append(renderSummaryRow(wseAdmin.strings.summaryFile, describeFileSettings(format, delimiter, fileName)));
+        summary.append(renderSummaryRow(wseAdmin.strings.summaryBatching, describeBatching(batchSize, splitThreshold)));
 
         container.empty().append(summary);
     }
@@ -482,10 +501,33 @@
         }
     }
 
-    function describeOutput(includeImages, includeInventory, includeVariations, format, delimiter) {
+    function describeVendorType(vendorAttribute, vendorLabel, typeTaxonomy, typeLabel) {
+        const parts = [];
+        if (vendorAttribute) {
+            parts.push(wseAdmin.strings.vendorAttribute + ': ' + vendorLabel);
+        } else {
+            parts.push(wseAdmin.strings.vendorAuto);
+        }
+
+        if (typeTaxonomy) {
+            parts.push(wseAdmin.strings.typeTaxonomy + ': ' + typeLabel);
+        } else {
+            parts.push(wseAdmin.strings.typeAuto);
+        }
+
+        return parts.join(' · ');
+    }
+
+    function describeInventory(inventoryPolicy, inventoryTracker, taxBehavior) {
+        const policyLabel = wseAdmin.options.inventoryPolicy[inventoryPolicy] || inventoryPolicy;
+        const trackerLabel = wseAdmin.options.inventoryTracker[inventoryTracker] || inventoryTracker;
+        const taxLabel = wseAdmin.options.taxBehavior[taxBehavior] || taxBehavior;
+
+        return policyLabel + ' · ' + trackerLabel + ' · ' + taxLabel;
+    }
+
+    function describeExtras(includeImages, includeInventory, includeVariations, includeCollections, includeRedirects, copyImages) {
         const chunks = [];
-        chunks.push(format.toUpperCase());
-        chunks.push(wseAdmin.strings.outputDelimiter + ' ' + (delimiter === '\t' ? 'TAB' : delimiter));
         if (includeImages) {
             chunks.push(wseAdmin.strings.outputImages);
         }
@@ -495,7 +537,43 @@
         if (includeVariations) {
             chunks.push(wseAdmin.strings.outputVariations);
         }
+        if (includeCollections) {
+            chunks.push(wseAdmin.strings.outputCollections);
+        }
+        if (includeRedirects) {
+            chunks.push(wseAdmin.strings.outputRedirects);
+        }
+        if (copyImages) {
+            chunks.push(wseAdmin.strings.outputCopyImages);
+        }
+
+        if (!chunks.length) {
+            return wseAdmin.strings.outputNone;
+        }
+
         return chunks.join(' · ');
+    }
+
+    function describeFileSettings(format, delimiter, fileName) {
+        const parts = [];
+        parts.push(format ? format.toUpperCase() : '');
+        parts.push(wseAdmin.strings.outputDelimiter + ' ' + (delimiter === '\t' ? 'TAB' : delimiter));
+        if (fileName) {
+            parts.push(fileName);
+        }
+
+        return parts.filter(Boolean).join(' · ');
+    }
+
+    function describeBatching(batchSize, splitThreshold) {
+        const parts = [];
+        if (batchSize) {
+            parts.push(wseAdmin.strings.batchSize + ': ' + batchSize);
+        }
+        if (splitThreshold) {
+            parts.push(wseAdmin.strings.splitThreshold + ': ' + splitThreshold + ' MB');
+        }
+        return parts.join(' · ');
     }
 
     function formatTimestamp(timestamp) {
