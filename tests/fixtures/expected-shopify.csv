@@ -1,0 +1,6 @@
+Handle,Title,"Body (HTML)",Vendor,"Product Category",Type,Tags,Published,Status,"SEO Title","SEO Description","Option1 Name","Option1 Value","Option2 Name","Option2 Value","Option3 Name","Option3 Value","Variant SKU","Variant Price","Compare At Price","Variant Inventory Qty","Inventory Policy","Inventory Tracker","Variant Barcode","Variant Weight","Variant Weight Unit","Variant Requires Shipping","Variant Taxable","Image Src","Image Position","Image Alt Text"
+arabic-shirt,"قميص قطني رجالي","<p>نص عربي <strong>مشوق</strong></p>","دار الأزياء","ملابس > قمصان",قميص,"رجالي, صيف, Limited Edition",TRUE,active,"قميص قطني رجالي | دار الأزياء","خامة ناعمة ومقاسات متعددة.",Color,,Size,,,,,,,,,,,,,,,,,
+arabic-shirt,,,,,,,,,,,Color,أحمر,Size,متوسط,,,AR-SHIRT-RED-M,120.00,150.00,25,deny,shopify,1234567890123,0.5,kg,TRUE,TRUE,,,
+arabic-shirt,,,,,,,,,,,Color,أزرق,Size,صغير,,,AR-SHIRT-BLUE-S,130.00,,15,continue,shopify,2234567890123,0.45,kg,TRUE,TRUE,,,
+arabic-shirt,,,,,,,,,,,,,,,,,,,,,,,,,,,,https://example.com/images/arabic-shirt-main.jpg,1,"قميص قطني رجالي"
+arabic-shirt,,,,,,,,,,,,,,,,,,,,,,,,,,,,https://example.com/images/arabic-shirt-alt.jpg,2,"تفاصيل الأزرار"

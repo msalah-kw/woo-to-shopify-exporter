@@ -1,0 +1,1463 @@
+<?php
+/**
+ * Streaming CSV generator for Shopify exports.
+ *
+ * @package WooToShopifyExporter
+ */
+
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
+}
+
+if ( ! class_exists( 'WSE_Shopify_CSV_Writer' ) ) {
+
+    /**
+     * Provides a streaming CSV writer that targets the Shopify import schema.
+     */
+    class WSE_Shopify_CSV_Writer {
+
+        /**
+         * Writer configuration options.
+         *
+         * @var array
+         */
+        protected $options = array();
+
+        /**
+         * CSV header columns.
+         *
+         * @var array
+         */
+        protected $columns = array();
+
+        /**
+         * Buffered rows awaiting flush.
+         *
+         * @var array
+         */
+        protected $buffer = array();
+
+        /**
+         * Previously recorded writer state used for resume support.
+         *
+         * @var array|null
+         */
+        protected $resume_state = null;
+
+        /**
+         * Current file resource handle.
+         *
+         * @var resource|null
+         */
+        protected $file_handle = null;
+
+        /**
+         * Current file index (1-based).
+         *
+         * @var int
+         */
+        protected $file_index = 0;
+
+        /**
+         * Current file path.
+         *
+         * @var string
+         */
+        protected $current_path = '';
+
+        /**
+         * Current file URL.
+         *
+         * @var string
+         */
+        protected $current_url = '';
+
+        /**
+         * Bytes written to the current file (including header).
+         *
+         * @var int
+         */
+        protected $current_size = 0;
+
+        /**
+         * Data rows written to the current file.
+         *
+         * @var int
+         */
+        protected $current_rows = 0;
+
+        /**
+         * Total data rows written across all files.
+         *
+         * @var int
+         */
+        protected $total_rows = 0;
+
+        /**
+         * Generated file metadata.
+         *
+         * @var array
+         */
+        protected $files = array();
+
+        /**
+         * Last error that occurred during writing.
+         *
+         * @var WP_Error|null
+         */
+        protected $last_error = null;
+
+        /**
+         * Tracks unique variant signatures to prevent duplicates.
+         *
+         * @var array
+         */
+        protected $variant_signatures = array();
+
+        /**
+         * Collected non-fatal warnings emitted during generation.
+         *
+         * @var array
+         */
+        protected $warnings = array();
+
+        /**
+         * Last recorded validation failure details.
+         *
+         * @var array
+         */
+        protected $last_failure = array();
+
+        /**
+         * Constructor.
+         *
+         * @param array $args Writer configuration.
+         */
+        public function __construct( array $args = array() ) {
+            $defaults = array(
+                'delimiter'          => ',',
+                'enclosure'          => '"',
+                'escape_char'        => '\\',
+                'batch_size'         => 500,
+                'max_file_size'      => 15 * 1024 * 1024, // 15MB.
+                'output_dir'         => '',
+                'base_url'           => '',
+                'file_name'          => 'shopify-products.csv',
+                'columns'            => self::get_default_columns(),
+                'include_variants'   => true,
+                'include_images'     => true,
+                'include_inventory'  => true,
+            );
+
+            $args = wp_parse_args( $args, $defaults );
+
+            $args['batch_size']    = max( 1, absint( apply_filters( 'wse_csv_batch_size', $args['batch_size'], $args ) ) );
+            $args['max_file_size'] = (int) apply_filters( 'wse_csv_max_file_size', $args['max_file_size'], $args );
+            $args['file_name']     = sanitize_file_name( $args['file_name'] );
+
+            if ( empty( $args['file_name'] ) ) {
+                $args['file_name'] = 'shopify-products.csv';
+            }
+
+            if ( empty( $args['columns'] ) || ! is_array( $args['columns'] ) ) {
+                $args['columns'] = self::get_default_columns();
+            }
+
+            $this->options      = $args;
+            $this->columns      = array_values( apply_filters( 'wse_csv_columns', $this->options['columns'], $this->options ) );
+            $this->buffer       = array();
+            $this->files        = array();
+            $this->resume_state = null;
+        }
+
+        /**
+         * Provides the default Shopify CSV header columns.
+         *
+         * @return array
+         */
+        public static function get_default_columns() {
+            $columns = array(
+                'Handle',
+                'Title',
+                'Body (HTML)',
+                'Vendor',
+                'Product Category',
+                'Type',
+                'Tags',
+                'Published',
+                'Status',
+                'SEO Title',
+                'SEO Description',
+                'Option1 Name',
+                'Option1 Value',
+                'Option2 Name',
+                'Option2 Value',
+                'Option3 Name',
+                'Option3 Value',
+                'Variant SKU',
+                'Variant Price',
+                'Compare At Price',
+                'Variant Inventory Qty',
+                'Inventory Policy',
+                'Inventory Tracker',
+                'Variant Barcode',
+                'Variant Weight',
+                'Variant Weight Unit',
+                'Variant Requires Shipping',
+                'Variant Taxable',
+                'Image Src',
+                'Image Position',
+                'Image Alt Text',
+            );
+
+            return apply_filters( 'wse_csv_default_columns', $columns );
+        }
+
+        /**
+         * Returns the configured batch size.
+         *
+         * @return int
+         */
+        public function get_batch_size() {
+            return $this->options['batch_size'];
+        }
+
+        /**
+         * Determines whether image rows should be included in the output.
+         *
+         * @return bool
+         */
+        public function includes_images() {
+            return ! empty( $this->options['include_images'] );
+        }
+
+        /**
+         * Determines whether variant rows should be included in the output.
+         *
+         * @return bool
+         */
+        public function includes_variants() {
+            return ! empty( $this->options['include_variants'] );
+        }
+
+        /**
+         * Determines whether inventory columns should be populated.
+         *
+         * @return bool
+         */
+        public function includes_inventory() {
+            return ! empty( $this->options['include_inventory'] );
+        }
+
+        /**
+         * Retrieves the last error encountered during writing.
+         *
+         * @return WP_Error|null
+         */
+        public function get_last_error() {
+            return $this->last_error;
+        }
+
+        /**
+         * Returns generated file metadata.
+         *
+         * @return array
+         */
+        public function get_files() {
+            return array_values( $this->files );
+        }
+
+        /**
+         * Restores a previously persisted writer state to enable resuming exports.
+         *
+         * @param array $state Serialized writer state.
+         *
+         * @return void
+         */
+        public function restore_state( array $state ) {
+            if ( empty( $state ) ) {
+                return;
+            }
+
+            if ( isset( $state['files'] ) && is_array( $state['files'] ) ) {
+                $this->files = $state['files'];
+            }
+
+            if ( isset( $state['variant_signatures'] ) && is_array( $state['variant_signatures'] ) ) {
+                $this->variant_signatures = $state['variant_signatures'];
+            }
+
+            if ( isset( $state['warnings'] ) && is_array( $state['warnings'] ) ) {
+                $this->warnings = $state['warnings'];
+            }
+
+            if ( isset( $state['total_rows'] ) ) {
+                $this->total_rows = (int) $state['total_rows'];
+            } elseif ( empty( $this->total_rows ) && ! empty( $this->files ) ) {
+                $total = 0;
+
+                foreach ( $this->files as $file ) {
+                    $total += isset( $file['rows'] ) ? (int) $file['rows'] : 0;
+                }
+
+                $this->total_rows = $total;
+            }
+
+            $this->resume_state = array(
+                'file_index'   => isset( $state['file_index'] ) ? max( 0, (int) $state['file_index'] ) : 0,
+                'current_path' => isset( $state['current_path'] ) ? $state['current_path'] : '',
+                'current_url'  => isset( $state['current_url'] ) ? $state['current_url'] : '',
+                'current_rows' => isset( $state['current_rows'] ) ? (int) $state['current_rows'] : 0,
+                'current_size' => isset( $state['current_size'] ) ? (int) $state['current_size'] : 0,
+            );
+
+            if ( $this->resume_state['file_index'] > 0 ) {
+                $this->file_index = (int) $this->resume_state['file_index'];
+            } elseif ( ! empty( $this->files ) ) {
+                $this->file_index = max( array_keys( $this->files ) );
+            }
+        }
+
+        /**
+         * Provides the current writer state for persistence.
+         *
+         * @return array
+         */
+        public function get_state() {
+            return array(
+                'file_index'   => $this->file_index,
+                'current_path' => $this->current_path,
+                'current_url'  => $this->current_url,
+                'current_rows' => $this->current_rows,
+                'current_size' => $this->current_size,
+                'files'        => $this->files,
+                'total_rows'   => $this->total_rows,
+                'variant_signatures' => $this->variant_signatures,
+                'warnings'           => $this->warnings,
+            );
+        }
+
+        /**
+         * Flushes buffered rows and closes handles without finalizing the writer.
+         *
+         * @return void
+         */
+        public function pause() {
+            $this->flush_buffer( true );
+            $this->close_handle();
+        }
+
+        /**
+         * Returns the total number of data rows written.
+         *
+         * @return int
+         */
+        public function get_total_rows_written() {
+            return $this->total_rows;
+        }
+
+        /**
+         * Returns the collected warnings for this writer instance.
+         *
+         * @return array
+         */
+        public function get_warnings() {
+            return $this->warnings;
+        }
+
+        /**
+         * Returns the last recorded validation failure, if any.
+         *
+         * @return array
+         */
+        public function get_last_failure() {
+            return $this->last_failure;
+        }
+
+        /**
+         * Writes a product package (product, variants, images) to the CSV stream.
+         *
+         * @param array $package Product package returned from the product source.
+         *
+         * @return bool
+        */
+        public function write_product_package( array $package ) {
+            if ( $this->last_error instanceof WP_Error ) {
+                return false;
+            }
+
+            $this->last_failure = array();
+
+            if ( ! $this->validate_package( $package ) ) {
+                return false;
+            }
+
+            $rows = $this->build_rows_from_package( $package );
+
+            foreach ( $rows as $row ) {
+                if ( ! $this->add_row( $row ) ) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /**
+         * Validates the package contents against Shopify constraints prior to writing.
+         *
+         * @param array $package Product package payload.
+         *
+         * @return bool
+         */
+        protected function validate_package( array $package ) {
+            $product  = isset( $package['product'] ) && is_array( $package['product'] ) ? $package['product'] : array();
+            $variants = isset( $package['variants'] ) && is_array( $package['variants'] ) ? $package['variants'] : array();
+
+            if ( empty( $product ) ) {
+                $this->last_error = new WP_Error( 'wse_missing_product_row', __( 'Product data is missing from the export package.', 'woo-to-shopify-exporter' ) );
+                $this->record_failure(
+                    'wse_missing_product_row',
+                    __( 'Product data is missing from the export package.', 'woo-to-shopify-exporter' ),
+                    array()
+                );
+                return false;
+            }
+
+            if ( ! $this->validate_product_row( $product ) ) {
+                return false;
+            }
+
+            $handle = isset( $product['Handle'] ) ? (string) $product['Handle'] : '';
+
+            if ( ! $this->validate_variant_rows( $handle, $variants ) ) {
+                return false;
+            }
+
+            return true;
+        }
+
+        /**
+         * Validates the product level row constraints.
+         *
+         * @param array $product Product row.
+         *
+         * @return bool
+         */
+        protected function validate_product_row( array $product ) {
+            $handle = isset( $product['Handle'] ) ? (string) $product['Handle'] : '';
+
+            if ( '' === $handle ) {
+                $this->last_error = new WP_Error( 'wse_missing_handle', __( 'Every product must include a Shopify handle.', 'woo-to-shopify-exporter' ) );
+                $this->record_failure(
+                    'wse_missing_handle',
+                    __( 'Every product must include a Shopify handle.', 'woo-to-shopify-exporter' ),
+                    array(
+                        'handle' => $handle,
+                    )
+                );
+                return false;
+            }
+
+            $seo_title = isset( $product['SEO Title'] ) ? (string) $product['SEO Title'] : '';
+            $seo_desc  = isset( $product['SEO Description'] ) ? (string) $product['SEO Description'] : '';
+
+            if ( $this->get_string_length( $seo_title ) > 70 ) {
+                $this->last_error = new WP_Error(
+                    'wse_seo_title_too_long',
+                    sprintf(
+                        /* translators: 1: product handle. 2: maximum character length. */
+                        __( 'The SEO title for product handle "%1$s" exceeds %2$d characters.', 'woo-to-shopify-exporter' ),
+                        $handle,
+                        70
+                    )
+                );
+                $this->record_failure(
+                    'wse_seo_title_too_long',
+                    sprintf(
+                        /* translators: 1: product handle. 2: maximum character length. */
+                        __( 'The SEO title for product handle "%1$s" exceeds %2$d characters.', 'woo-to-shopify-exporter' ),
+                        $handle,
+                        70
+                    ),
+                    array(
+                        'handle' => $handle,
+                        'limit'  => 70,
+                    )
+                );
+
+                return false;
+            }
+
+            if ( $this->get_string_length( $seo_desc ) > 160 ) {
+                $this->last_error = new WP_Error(
+                    'wse_seo_description_too_long',
+                    sprintf(
+                        /* translators: 1: product handle. 2: maximum character length. */
+                        __( 'The SEO description for product handle "%1$s" exceeds %2$d characters.', 'woo-to-shopify-exporter' ),
+                        $handle,
+                        160
+                    )
+                );
+                $this->record_failure(
+                    'wse_seo_description_too_long',
+                    sprintf(
+                        /* translators: 1: product handle. 2: maximum character length. */
+                        __( 'The SEO description for product handle "%1$s" exceeds %2$d characters.', 'woo-to-shopify-exporter' ),
+                        $handle,
+                        160
+                    ),
+                    array(
+                        'handle' => $handle,
+                        'limit'  => 160,
+                    )
+                );
+
+                return false;
+            }
+
+            return true;
+        }
+
+        /**
+         * Validates variant rows and enforces uniqueness.
+         *
+         * @param string $handle   Product handle.
+         * @param array  $variants Variant rows.
+         *
+         * @return bool
+         */
+        protected function validate_variant_rows( $handle, array $variants ) {
+            $variant_rows = array();
+
+            foreach ( $variants as $variant ) {
+                if ( is_array( $variant ) ) {
+                    $variant_rows[] = $variant;
+                }
+            }
+
+            $variant_count = count( $variant_rows );
+
+            if ( $variant_count > 100 ) {
+                $this->add_warning(
+                    'too_many_variants',
+                    sprintf(
+                        /* translators: 1: product handle, 2: variant count. */
+                        __( 'Product handle "%1$s" has %2$d variants. Shopify recommends a maximum of 100 variants per product.', 'woo-to-shopify-exporter' ),
+                        $handle,
+                        $variant_count
+                    ),
+                    array(
+                        'handle' => $handle,
+                        'count'  => $variant_count,
+                    )
+                );
+            }
+
+            $local_signatures = array();
+
+            foreach ( $variant_rows as $index => $variant ) {
+                foreach ( $variant as $column => $value ) {
+                    if ( preg_match( '/^Option(\d+)\s+(Name|Value)$/', $column, $matches ) ) {
+                        $slot = (int) $matches[1];
+
+                        if ( $slot > 3 && '' !== trim( (string) $value ) ) {
+                            $this->last_error = new WP_Error(
+                                'wse_option_limit_exceeded',
+                                sprintf(
+                                    /* translators: 1: product handle. */
+                                    __( 'Product handle "%1$s" defines more than three options, which Shopify does not support.', 'woo-to-shopify-exporter' ),
+                                    $handle
+                                )
+                            );
+                            $this->record_failure(
+                                'wse_option_limit_exceeded',
+                                sprintf(
+                                    /* translators: 1: product handle. */
+                                    __( 'Product handle "%1$s" defines more than three options, which Shopify does not support.', 'woo-to-shopify-exporter' ),
+                                    $handle
+                                ),
+                                array(
+                                    'handle'        => $handle,
+                                    'column'        => $column,
+                                    'variant_index' => $index + 1,
+                                )
+                            );
+
+                            return false;
+                        }
+                    }
+                }
+
+                $price = isset( $variant['Variant Price'] ) ? trim( (string) $variant['Variant Price'] ) : '';
+
+                if ( '' === $price || ! $this->is_numeric_string( $price ) ) {
+                    $this->last_error = new WP_Error(
+                        'wse_variant_price_invalid',
+                        sprintf(
+                            /* translators: 1: product handle, 2: variant index (1-based). */
+                            __( 'Variant %2$d for product handle "%1$s" must have a numeric price.', 'woo-to-shopify-exporter' ),
+                            $handle,
+                            $index + 1
+                        )
+                    );
+                    $this->record_failure(
+                        'wse_variant_price_invalid',
+                        sprintf(
+                            /* translators: 1: product handle, 2: variant index (1-based). */
+                            __( 'Variant %2$d for product handle "%1$s" must have a numeric price.', 'woo-to-shopify-exporter' ),
+                            $handle,
+                            $index + 1
+                        ),
+                        array(
+                            'handle'        => $handle,
+                            'variant_index' => $index + 1,
+                            'value'         => $price,
+                        )
+                    );
+
+                    return false;
+                }
+
+                $compare = isset( $variant['Compare At Price'] ) ? trim( (string) $variant['Compare At Price'] ) : '';
+
+                if ( '' !== $compare && ! $this->is_numeric_string( $compare ) ) {
+                    $this->last_error = new WP_Error(
+                        'wse_compare_at_price_invalid',
+                        sprintf(
+                            /* translators: 1: product handle, 2: variant index (1-based). */
+                            __( 'Compare-at price for variant %2$d of product handle "%1$s" must be numeric.', 'woo-to-shopify-exporter' ),
+                            $handle,
+                            $index + 1
+                        )
+                    );
+                    $this->record_failure(
+                        'wse_compare_at_price_invalid',
+                        sprintf(
+                            /* translators: 1: product handle, 2: variant index (1-based). */
+                            __( 'Compare-at price for variant %2$d of product handle "%1$s" must be numeric.', 'woo-to-shopify-exporter' ),
+                            $handle,
+                            $index + 1
+                        ),
+                        array(
+                            'handle'        => $handle,
+                            'variant_index' => $index + 1,
+                            'value'         => $compare,
+                        )
+                    );
+
+                    return false;
+                }
+
+                $inventory_policy = isset( $variant['Inventory Policy'] ) ? strtolower( trim( (string) $variant['Inventory Policy'] ) ) : '';
+
+                if ( '' !== $inventory_policy && ! in_array( $inventory_policy, array( 'deny', 'continue' ), true ) ) {
+                    $this->last_error = new WP_Error(
+                        'wse_inventory_policy_invalid',
+                        sprintf(
+                            /* translators: 1: product handle, 2: inventory policy value. */
+                            __( 'Inventory policy "%2$s" for product handle "%1$s" is not supported by Shopify.', 'woo-to-shopify-exporter' ),
+                            $handle,
+                            $inventory_policy
+                        )
+                    );
+                    $this->record_failure(
+                        'wse_inventory_policy_invalid',
+                        sprintf(
+                            /* translators: 1: product handle, 2: inventory policy value. */
+                            __( 'Inventory policy "%2$s" for product handle "%1$s" is not supported by Shopify.', 'woo-to-shopify-exporter' ),
+                            $handle,
+                            $inventory_policy
+                        ),
+                        array(
+                            'handle'  => $handle,
+                            'policy'  => $inventory_policy,
+                            'variant' => $index + 1,
+                        )
+                    );
+
+                    return false;
+                }
+
+                $signature = $this->build_variant_signature( $handle, $variant );
+
+                if ( isset( $local_signatures[ $signature ] ) || isset( $this->variant_signatures[ $signature ] ) ) {
+                    $this->last_error = new WP_Error(
+                        'wse_duplicate_variant',
+                        sprintf(
+                            /* translators: 1: product handle. */
+                            __( 'Duplicate variant detected for product handle "%1$s". Handles and option combinations must be unique.', 'woo-to-shopify-exporter' ),
+                            $handle
+                        )
+                    );
+                    $this->record_failure(
+                        'wse_duplicate_variant',
+                        sprintf(
+                            /* translators: 1: product handle. */
+                            __( 'Duplicate variant detected for product handle "%1$s". Handles and option combinations must be unique.', 'woo-to-shopify-exporter' ),
+                            $handle
+                        ),
+                        array(
+                            'handle'        => $handle,
+                            'variant_index' => $index + 1,
+                        )
+                    );
+
+                    return false;
+                }
+
+                $local_signatures[ $signature ]      = true;
+                $this->variant_signatures[ $signature ] = true;
+            }
+
+            return true;
+        }
+
+        /**
+         * Adds a warning to the collection and emits a hook for observers.
+         *
+         * @param string $code    Warning identifier.
+         * @param string $message Human readable warning message.
+         * @param array  $data    Additional contextual data.
+         *
+         * @return void
+         */
+        protected function add_warning( $code, $message, array $data = array() ) {
+            $warning = array(
+                'code'    => $code,
+                'message' => $message,
+                'data'    => $data,
+            );
+
+            $this->warnings[] = $warning;
+
+            /**
+             * Fires when the CSV writer records a non-fatal warning.
+             *
+             * @since 1.0.0
+             *
+             * @param array                 $warning Warning payload.
+             * @param WSE_Shopify_CSV_Writer $writer  Current writer instance.
+             */
+            do_action( 'wse_csv_writer_warning', $warning, $this );
+        }
+
+        /**
+         * Records the last validation failure details.
+         *
+         * @param string $code    Failure code.
+         * @param string $message Human readable message.
+         * @param array  $data    Contextual data.
+         */
+        protected function record_failure( $code, $message, array $data = array() ) {
+            $this->last_failure = array(
+                'code'    => $code,
+                'message' => $message,
+                'data'    => $data,
+            );
+        }
+
+        /**
+         * Builds a signature string for a variant to enforce uniqueness.
+         *
+         * @param string $handle  Product handle.
+         * @param array  $variant Variant row data.
+         *
+         * @return string
+         */
+        protected function build_variant_signature( $handle, array $variant ) {
+            $parts   = array( strtolower( trim( (string) $handle ) ) );
+            $indices = array( 'Option1', 'Option2', 'Option3' );
+
+            foreach ( $indices as $index ) {
+                $name_key  = $index . ' Name';
+                $value_key = $index . ' Value';
+
+                $parts[] = strtolower( trim( isset( $variant[ $name_key ] ) ? (string) $variant[ $name_key ] : '' ) );
+                $parts[] = strtolower( trim( isset( $variant[ $value_key ] ) ? (string) $variant[ $value_key ] : '' ) );
+            }
+
+            $sku = isset( $variant['Variant SKU'] ) ? trim( (string) $variant['Variant SKU'] ) : '';
+
+            if ( '' !== $sku ) {
+                $parts[] = 'sku:' . strtolower( $sku );
+            }
+
+            return implode( '|', $parts );
+        }
+
+        /**
+         * Determines if the provided value represents a numeric string.
+         *
+         * @param string $value Value to inspect.
+         *
+         * @return bool
+         */
+        protected function is_numeric_string( $value ) {
+            if ( '' === $value ) {
+                return false;
+            }
+
+            if ( is_numeric( $value ) ) {
+                return true;
+            }
+
+            return false;
+        }
+
+        /**
+         * Returns the string length using multibyte support when available.
+         *
+         * @param string $value String value.
+         *
+         * @return int
+         */
+        protected function get_string_length( $value ) {
+            if ( function_exists( 'mb_strlen' ) ) {
+                return mb_strlen( $value, 'UTF-8' );
+            }
+
+            return strlen( $value );
+        }
+
+        /**
+         * Adds a single row to the buffer and flushes if necessary.
+         *
+         * @param array $row Row data keyed by column names.
+         *
+         * @return bool
+         */
+        public function add_row( array $row ) {
+            if ( $this->last_error instanceof WP_Error ) {
+                return false;
+            }
+
+            $this->buffer[] = $row;
+
+            if ( count( $this->buffer ) >= $this->options['batch_size'] ) {
+                return $this->flush_buffer();
+            }
+
+            return true;
+        }
+
+        /**
+         * Flushes any buffered rows to disk.
+         *
+         * @param bool $force Whether to force flush even if buffer is below batch size.
+         *
+         * @return bool
+         */
+        public function flush_buffer( $force = false ) {
+            if ( empty( $this->buffer ) ) {
+                return true;
+            }
+
+            if ( ! $force && count( $this->buffer ) < $this->options['batch_size'] ) {
+                return true;
+            }
+
+            if ( ! $this->ensure_file_handle() ) {
+                return false;
+            }
+
+            foreach ( $this->buffer as $row ) {
+                if ( ! $this->write_row_to_file( $row ) ) {
+                    $this->buffer = array();
+                    return false;
+                }
+            }
+
+            $this->buffer = array();
+
+            return true;
+        }
+
+        /**
+         * Finalizes the writer by flushing buffers and closing handles.
+         *
+         * @return bool
+         */
+        public function finish() {
+            if ( ! $this->file_handle && empty( $this->files ) ) {
+                if ( ! $this->ensure_file_handle() ) {
+                    return false;
+                }
+            }
+
+            if ( ! $this->flush_buffer( true ) ) {
+                $this->close_handle();
+                return false;
+            }
+
+            $this->close_handle();
+
+            return ! ( $this->last_error instanceof WP_Error );
+        }
+
+        /**
+         * Builds rows for a product package.
+         *
+         * @param array $package Product package with product, variants, and images arrays.
+         *
+         * @return array
+         */
+        protected function build_rows_from_package( array $package ) {
+            $rows         = array();
+            $product_row  = isset( $package['product'] ) && is_array( $package['product'] ) ? $package['product'] : array();
+            $variants     = isset( $package['variants'] ) && is_array( $package['variants'] ) ? $package['variants'] : array();
+            $images       = isset( $package['images'] ) && is_array( $package['images'] ) ? $package['images'] : array();
+            $product_meta = isset( $package['meta'] ) && isset( $package['meta']['product'] ) && is_array( $package['meta']['product'] )
+                ? $package['meta']['product']
+                : array();
+
+            if ( empty( $variants ) ) {
+                $variants = array(
+                    array(
+                        'Handle' => isset( $product_row['Handle'] ) ? $product_row['Handle'] : '',
+                    ),
+                );
+            }
+
+            if ( ! $this->options['include_variants'] && count( $variants ) > 1 ) {
+                $variants = array( reset( $variants ) );
+            }
+
+            $should_add_parent_row = $this->should_add_parent_row( $product_meta, $variants );
+            $option_template       = $this->extract_option_name_template( $variants );
+
+            if ( $should_add_parent_row ) {
+                $parent_variant = $this->build_parent_variant_stub( $option_template );
+                $rows[]         = $this->merge_product_and_variant_row( $product_row, $parent_variant, 0 );
+                $variant_offset = 1;
+            } else {
+                $variant_offset = 0;
+            }
+
+            foreach ( array_values( $variants ) as $index => $variant ) {
+                $rows[] = $this->merge_product_and_variant_row( $product_row, $variant, $index + $variant_offset );
+            }
+
+            if ( $this->options['include_images'] && ! empty( $images ) ) {
+                foreach ( $images as $image ) {
+                    $rows[] = $this->merge_product_and_image_row( $product_row, $image );
+                }
+            }
+
+            return $rows;
+        }
+
+        /**
+         * Combines product and variant information into a single CSV row.
+         *
+         * @param array $product Product level columns.
+         * @param array $variant Variant level columns.
+         * @param int   $index   Variant position.
+         *
+         * @return array
+         */
+        protected function merge_product_and_variant_row( array $product, array $variant, $index ) {
+            $row = $this->empty_row();
+
+            if ( 0 === $index ) {
+                $row = $this->fill_row_values( $row, $product );
+            } else {
+                if ( isset( $product['Handle'] ) ) {
+                    $row['Handle'] = $product['Handle'];
+                }
+            }
+
+            $row = $this->fill_row_values( $row, $variant );
+
+            if ( ! $this->options['include_inventory'] ) {
+                $row['Variant Inventory Qty'] = '';
+                $row['Inventory Policy']      = '';
+                $row['Inventory Tracker']     = '';
+            }
+
+            if ( empty( $row['Handle'] ) && isset( $product['Handle'] ) ) {
+                $row['Handle'] = $product['Handle'];
+            }
+
+            return $row;
+        }
+
+        /**
+         * Determines whether a parent row should precede the variant rows.
+         *
+         * @param array $product_meta Product metadata from the package.
+         * @param array $variants     Variant rows generated for the product.
+         *
+         * @return bool
+         */
+        protected function should_add_parent_row( array $product_meta, array $variants ) {
+            if ( empty( $this->options['include_variants'] ) ) {
+                return false;
+            }
+
+            if ( empty( $variants ) ) {
+                return false;
+            }
+
+            $type = isset( $product_meta['type'] ) ? $product_meta['type'] : '';
+
+            return 'variable' === $type;
+        }
+
+        /**
+         * Extracts option name mappings from the variant rows.
+         *
+         * @param array $variants Variant rows.
+         *
+         * @return array
+         */
+        protected function extract_option_name_template( array $variants ) {
+            $template = array();
+
+            for ( $i = 1; $i <= 3; $i++ ) {
+                $key = 'Option' . $i . ' Name';
+
+                foreach ( $variants as $variant ) {
+                    if ( isset( $variant[ $key ] ) && '' !== $variant[ $key ] ) {
+                        $template[ $key ] = $variant[ $key ];
+                        break;
+                    }
+                }
+            }
+
+            return $template;
+        }
+
+        /**
+         * Builds a placeholder variant row for the parent product entry.
+         *
+         * @param array $option_template Option name template.
+         *
+         * @return array
+         */
+        protected function build_parent_variant_stub( array $option_template ) {
+            $stub = array();
+
+            foreach ( $this->get_variant_column_keys() as $column ) {
+                $stub[ $column ] = '';
+            }
+
+            for ( $i = 1; $i <= 3; $i++ ) {
+                $name_key        = 'Option' . $i . ' Name';
+                $value_key       = 'Option' . $i . ' Value';
+                $stub[ $value_key ] = '';
+
+                if ( isset( $option_template[ $name_key ] ) ) {
+                    $stub[ $name_key ] = $option_template[ $name_key ];
+                }
+            }
+
+            return $stub;
+        }
+
+        /**
+         * Provides the Shopify variant column keys for stubs.
+         *
+         * @return array
+         */
+        protected function get_variant_column_keys() {
+            return array(
+                'Option1 Name',
+                'Option1 Value',
+                'Option2 Name',
+                'Option2 Value',
+                'Option3 Name',
+                'Option3 Value',
+                'Variant SKU',
+                'Variant Price',
+                'Compare At Price',
+                'Variant Inventory Qty',
+                'Inventory Policy',
+                'Inventory Tracker',
+                'Variant Barcode',
+                'Variant Weight',
+                'Variant Weight Unit',
+                'Variant Requires Shipping',
+                'Variant Taxable',
+            );
+        }
+
+        /**
+         * Combines product and image information into a CSV row.
+         *
+         * @param array $product Product level columns.
+         * @param array $image   Image row columns.
+         *
+         * @return array
+         */
+        protected function merge_product_and_image_row( array $product, array $image ) {
+            $row = $this->empty_row();
+
+            if ( isset( $product['Handle'] ) ) {
+                $row['Handle'] = $product['Handle'];
+            }
+
+            $row = $this->fill_row_values( $row, $image );
+
+            if ( empty( $row['Handle'] ) && isset( $image['Handle'] ) ) {
+                $row['Handle'] = $image['Handle'];
+            }
+
+            return $row;
+        }
+
+        /**
+         * Ensures the output directory exists.
+         *
+         * @return bool
+         */
+        protected function ensure_output_directory() {
+            if ( empty( $this->options['output_dir'] ) ) {
+                $uploads = wp_upload_dir();
+
+                if ( ! empty( $uploads['error'] ) ) {
+                    $this->last_error = new WP_Error( 'wse_upload_dir_error', $uploads['error'] );
+                    return false;
+                }
+
+                $directory = trailingslashit( $uploads['basedir'] ) . 'woo-to-shopify-exporter';
+                $url       = trailingslashit( $uploads['baseurl'] ) . 'woo-to-shopify-exporter';
+
+                if ( ! wp_mkdir_p( $directory ) ) {
+                    $this->last_error = new WP_Error( 'wse_directory_unwritable', __( 'Unable to create export directory.', 'woo-to-shopify-exporter' ) );
+                    return false;
+                }
+
+                $this->options['output_dir'] = $directory;
+                $this->options['base_url']   = $url;
+            } else {
+                if ( ! wp_mkdir_p( $this->options['output_dir'] ) ) {
+                    $this->last_error = new WP_Error( 'wse_directory_unwritable', __( 'Unable to create export directory.', 'woo-to-shopify-exporter' ) );
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /**
+         * Ensures a writable file handle is available.
+         *
+         * @return bool
+         */
+        protected function ensure_file_handle() {
+            if ( $this->file_handle ) {
+                return true;
+            }
+
+            if ( $this->resume_state ) {
+                $state = $this->resume_state;
+                $path  = isset( $state['current_path'] ) ? $state['current_path'] : '';
+
+                if ( $path && file_exists( $path ) && is_writable( $path ) ) {
+                    $handle = fopen( $path, 'ab' );
+
+                    if ( $handle ) {
+                        $this->file_handle  = $handle;
+                        $this->current_path = $path;
+                        $this->current_url  = ! empty( $state['current_url'] ) ? $state['current_url'] : $this->build_file_url( basename( $path ) );
+                        $this->current_rows = isset( $state['current_rows'] ) ? (int) $state['current_rows'] : 0;
+                        $this->current_size = isset( $state['current_size'] ) && $state['current_size'] > 0 ? (int) $state['current_size'] : filesize( $path );
+                        $this->file_index   = isset( $state['file_index'] ) && $state['file_index'] > 0 ? (int) $state['file_index'] : ( ! empty( $this->files ) ? max( array_keys( $this->files ) ) : 1 );
+
+                        if ( empty( $this->files[ $this->file_index ] ) ) {
+                            $this->files[ $this->file_index ] = array(
+                                'path'     => $this->current_path,
+                                'url'      => $this->current_url,
+                                'filename' => basename( $this->current_path ),
+                                'rows'     => $this->current_rows,
+                                'size'     => $this->current_size,
+                            );
+                        }
+
+                        $this->resume_state = null;
+
+                        return true;
+                    }
+                }
+
+                $this->resume_state = null;
+            }
+
+            if ( ! $this->ensure_output_directory() ) {
+                return false;
+            }
+
+            $this->file_index++; // 1-based.
+
+            $filename = $this->build_filename( $this->file_index );
+            $path     = trailingslashit( $this->options['output_dir'] ) . $filename;
+            $handle   = fopen( $path, 'wb' );
+
+            if ( ! $handle ) {
+                $this->last_error = new WP_Error( 'wse_file_open_failed', __( 'Unable to open export file for writing.', 'woo-to-shopify-exporter' ) );
+                return false;
+            }
+
+            $this->file_handle  = $handle;
+            $this->current_path = $path;
+            $this->current_url  = $this->build_file_url( $filename );
+            $this->current_size = 0;
+            $this->current_rows = 0;
+
+            $this->files[ $this->file_index ] = array(
+                'path'     => $this->current_path,
+                'url'      => $this->current_url,
+                'filename' => $filename,
+                'rows'     => 0,
+                'size'     => 0,
+            );
+
+            if ( false === fputcsv( $this->file_handle, $this->columns, $this->options['delimiter'], $this->options['enclosure'], $this->options['escape_char'] ) ) {
+                $this->last_error = new WP_Error( 'wse_header_write_failed', __( 'Unable to write CSV header.', 'woo-to-shopify-exporter' ) );
+                $this->close_handle();
+                return false;
+            }
+
+            $position = ftell( $this->file_handle );
+            if ( false !== $position ) {
+                $this->current_size = (int) $position;
+                $this->files[ $this->file_index ]['size'] = $this->current_size;
+            }
+
+            return true;
+        }
+
+        /**
+         * Writes a normalized row to the active CSV file.
+         *
+         * @param array $row Row data.
+         *
+         * @return bool
+         */
+        protected function write_row_to_file( array $row ) {
+            if ( ! $this->file_handle && ! $this->ensure_file_handle() ) {
+                return false;
+            }
+
+            $normalized = $this->normalize_row( $row );
+            $row_bytes  = $this->estimate_row_size( $normalized );
+
+            if ( $this->should_rotate_file( $row_bytes ) ) {
+                $this->rotate_file();
+
+                if ( ! $this->file_handle && ! $this->ensure_file_handle() ) {
+                    return false;
+                }
+            }
+
+            if ( false === fputcsv( $this->file_handle, $normalized, $this->options['delimiter'], $this->options['enclosure'], $this->options['escape_char'] ) ) {
+                $this->last_error = new WP_Error( 'wse_row_write_failed', __( 'Unable to write export row to disk.', 'woo-to-shopify-exporter' ) );
+                return false;
+            }
+
+            $this->total_rows++;
+            $this->current_rows++;
+            $position = ftell( $this->file_handle );
+
+            if ( false !== $position ) {
+                $this->current_size = (int) $position;
+            } else {
+                $this->current_size += $row_bytes;
+            }
+
+            $this->files[ $this->file_index ]['rows'] = $this->current_rows;
+            $this->files[ $this->file_index ]['size'] = $this->current_size;
+
+            return true;
+        }
+
+        /**
+         * Determines whether the current file should rotate based on the next row size.
+         *
+         * @param int $row_bytes Estimated bytes for the next row.
+         *
+         * @return bool
+         */
+        protected function should_rotate_file( $row_bytes ) {
+            if ( $this->options['max_file_size'] <= 0 ) {
+                return false;
+            }
+
+            if ( ! $this->file_handle ) {
+                return false;
+            }
+
+            if ( $this->current_rows <= 0 ) {
+                return false;
+            }
+
+            return ( $this->current_size + (int) $row_bytes ) > $this->options['max_file_size'];
+        }
+
+        /**
+         * Rotates the writer to a new file.
+         *
+         * @return void
+         */
+        protected function rotate_file() {
+            $this->close_handle();
+            $this->ensure_file_handle();
+        }
+
+        /**
+         * Closes the current file handle.
+         *
+         * @return void
+         */
+        protected function close_handle() {
+            if ( $this->file_handle ) {
+                fclose( $this->file_handle );
+                $this->file_handle = null;
+            }
+        }
+
+        /**
+         * Builds a sanitized filename for the given index.
+         *
+         * @param int $index File index (1-based).
+         *
+         * @return string
+         */
+        protected function build_filename( $index ) {
+            $base_name = $this->options['file_name'];
+            $extension = pathinfo( $base_name, PATHINFO_EXTENSION );
+            $stem      = pathinfo( $base_name, PATHINFO_FILENAME );
+
+            if ( empty( $extension ) ) {
+                $extension = 'csv';
+            }
+
+            if ( empty( $stem ) ) {
+                $stem = 'shopify-products';
+            }
+
+            if ( 1 === (int) $index ) {
+                $filename = $stem . '.' . $extension;
+            } else {
+                $filename = sprintf( '%s-part-%d.%s', $stem, (int) $index, $extension );
+            }
+
+            return sanitize_file_name( $filename );
+        }
+
+        /**
+         * Resolves the URL for the given filename.
+         *
+         * @param string $filename File name.
+         *
+         * @return string
+         */
+        protected function build_file_url( $filename ) {
+            if ( empty( $this->options['base_url'] ) ) {
+                $this->ensure_output_directory();
+            }
+
+            if ( empty( $this->options['base_url'] ) ) {
+                return '';
+            }
+
+            return trailingslashit( $this->options['base_url'] ) . $filename;
+        }
+
+        /**
+         * Creates an empty row array seeded with header columns.
+         *
+         * @return array
+         */
+        protected function empty_row() {
+            return array_fill_keys( $this->columns, '' );
+        }
+
+        /**
+         * Fills a row with provided values while respecting known columns.
+         *
+         * @param array $row    Base row.
+         * @param array $values Values to merge.
+         *
+         * @return array
+         */
+        protected function fill_row_values( array $row, array $values ) {
+            foreach ( $values as $column => $value ) {
+                if ( array_key_exists( $column, $row ) ) {
+                    $row[ $column ] = $this->normalize_value( $value );
+                }
+            }
+
+            return $row;
+        }
+
+        /**
+         * Normalizes a row to ensure all columns exist.
+         *
+         * @param array $row Row values keyed by column name.
+         *
+         * @return array
+         */
+        protected function normalize_row( array $row ) {
+            $normalized = $this->empty_row();
+
+            foreach ( $row as $column => $value ) {
+                if ( array_key_exists( $column, $normalized ) ) {
+                    $normalized[ $column ] = $this->normalize_value( $value );
+                }
+            }
+
+            return $normalized;
+        }
+
+        /**
+         * Normalizes a scalar value for CSV output.
+         *
+         * @param mixed $value Value to normalize.
+         *
+         * @return string
+         */
+        protected function normalize_value( $value ) {
+            if ( is_bool( $value ) ) {
+                return $value ? 'TRUE' : 'FALSE';
+            }
+
+            if ( is_array( $value ) ) {
+                $value = implode( ', ', array_map( 'strval', $value ) );
+            }
+
+            if ( null === $value ) {
+                $value = '';
+            }
+
+            $value = (string) $value;
+            $value = wp_check_invalid_utf8( $value, true );
+            $value = str_replace( array( "\r\n", "\r" ), "\n", $value );
+            $value = str_replace( array( '“', '”', '„', '‟', '«', '»' ), chr( 34 ), $value );
+
+            return $value;
+        }
+
+        /**
+         * Estimates the number of bytes a row will use on disk.
+         *
+         * @param array $row Normalized row.
+         *
+         * @return int
+         */
+        protected function estimate_row_size( array $row ) {
+            $temp = fopen( 'php://temp', 'wb+' );
+
+            if ( ! $temp ) {
+                return 0;
+            }
+
+            fputcsv( $temp, $row, $this->options['delimiter'], $this->options['enclosure'], $this->options['escape_char'] );
+            $position = ftell( $temp );
+            fclose( $temp );
+
+            return $position ? (int) $position : 0;
+        }
+    }
+}
