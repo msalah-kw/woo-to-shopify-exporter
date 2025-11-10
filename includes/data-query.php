@@ -37,7 +37,7 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
          */
         public function loadProducts( array $scope = array() ) {
             if ( ! class_exists( 'WC_Product_Query' ) ) {
-                return array();
+                return $this->empty_response();
             }
 
             $args = $this->build_query_args( $scope );
@@ -45,17 +45,12 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
             $results = $query->get_products();
 
             if ( empty( $results ) ) {
-                return array();
+                return $this->empty_response();
             }
 
             $organized = $this->organize_products( $results );
 
-            $response = array(
-                'products' => array(),
-                'variants' => array(),
-                'images'   => array(),
-                'items'    => array(),
-            );
+            $response = $this->empty_response();
 
             foreach ( $organized as $entry ) {
                 if ( empty( $entry['product'] ) || ! $entry['product'] instanceof WC_Product ) {
@@ -253,8 +248,13 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
                 $variation_meta[] = $this->variation_meta_from_simple_product( $product, $data );
             }
 
-            $shopify_product  = $this->build_shopify_product_row( $data );
-            $shopify_variants = $this->build_shopify_variant_rows( $product, $data, $variation_meta );
+            $extra_variant_tags = array();
+            $shopify_variants   = $this->build_shopify_variant_rows( $product, $data, $variation_meta, $extra_variant_tags );
+            if ( ! empty( $extra_variant_tags ) ) {
+                $data['extra_tags'] = $extra_variant_tags;
+            }
+
+            $shopify_product = $this->build_shopify_product_row( $data );
             $shopify_images   = $this->build_shopify_image_rows( $data );
 
             return array(
@@ -265,6 +265,20 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
                     'product'    => $data,
                     'variations' => $variation_meta,
                 ),
+            );
+        }
+
+        /**
+         * Provides the default empty response structure for product loads.
+         *
+         * @return array
+         */
+        protected function empty_response() {
+            return array(
+                'products' => array(),
+                'variants' => array(),
+                'images'   => array(),
+                'items'    => array(),
             );
         }
 
@@ -308,10 +322,10 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
          */
         protected function build_shopify_product_row( array $data ) {
             $brand_name    = isset( $data['brand']['name'] ) ? $data['brand']['name'] : '';
-            $category      = $this->join_term_names( isset( $data['categories'] ) ? $data['categories'] : array(), ' > ' );
-            $tags          = $this->join_term_names( isset( $data['tags'] ) ? $data['tags'] : array(), ', ' );
+            $category      = $this->build_product_category_path( isset( $data['categories'] ) ? $data['categories'] : array() );
+            $tags          = $this->format_shopify_tags( $data );
             $status        = isset( $data['status'] ) ? $data['status'] : 'publish';
-            $type_label    = $this->get_product_type_label( isset( $data['type'] ) ? $data['type'] : 'simple' );
+            $type_label    = $this->determine_shopify_type( $data );
             $seo_title     = $this->build_seo_title( $data );
             $seo_desc      = $this->build_seo_description( $data );
             $published     = 'publish' === $status ? 'TRUE' : 'FALSE';
@@ -341,25 +355,27 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
          *
          * @return array
          */
-        protected function build_shopify_variant_rows( WC_Product $product, array $product_data, array $variation_meta ) {
+        protected function build_shopify_variant_rows( WC_Product $product, array $product_data, array $variation_meta, array &$extra_variant_tags = array() ) {
             $option_definitions = $this->collect_option_definitions( $product );
             $rows               = array();
-
-            if ( $product->is_type( 'variable' ) ) {
-                foreach ( $variation_meta as $meta ) {
-                    $rows[] = $this->build_variant_row_from_meta( $meta, $product_data, $option_definitions );
-                }
-
-                return $rows;
-            }
+            $extra_variant_tags = array();
+            $used_skus          = array();
 
             if ( empty( $variation_meta ) ) {
                 $variation_meta = array( $this->variation_meta_from_simple_product( $product, $product_data ) );
             }
 
-            foreach ( $variation_meta as $meta ) {
-                $rows[] = $this->build_variant_row_from_meta( $meta, $product_data, $option_definitions );
+            $flattened_meta = $this->flatten_variation_meta( $variation_meta, $option_definitions, $product_data );
+
+            if ( empty( $flattened_meta ) ) {
+                $flattened_meta = $variation_meta;
             }
+
+            foreach ( array_values( $flattened_meta ) as $index => $meta ) {
+                $rows[] = $this->build_variant_row_from_meta( $meta, $product_data, $option_definitions, $extra_variant_tags, $used_skus, $index );
+            }
+
+            $extra_variant_tags = array_values( array_unique( array_filter( $extra_variant_tags ) ) );
 
             return $rows;
         }
@@ -373,16 +389,17 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
          *
          * @return array
          */
-        protected function build_variant_row_from_meta( array $meta, array $product_data, array $option_definitions ) {
-            $attributes_map = array();
+        protected function build_variant_row_from_meta( array $meta, array $product_data, array $option_definitions, array &$extra_variant_tags, array &$used_skus, $position ) {
+            $partition      = $this->partition_variant_attributes( isset( $meta['attributes'] ) ? $meta['attributes'] : array(), $option_definitions );
+            $attributes_map = $partition['primary'];
 
-            if ( ! empty( $meta['attributes'] ) && is_array( $meta['attributes'] ) ) {
-                foreach ( $meta['attributes'] as $attribute ) {
-                    if ( empty( $attribute['slug'] ) ) {
-                        continue;
+            if ( ! empty( $partition['extra'] ) ) {
+                foreach ( $partition['extra'] as $attribute ) {
+                    $tag_label = $this->normalize_tag_label( $attribute['name'] . ': ' . $attribute['value'] );
+
+                    if ( '' !== $tag_label ) {
+                        $extra_variant_tags[] = $tag_label;
                     }
-
-                    $attributes_map[ $attribute['slug'] ] = isset( $attribute['value'] ) ? $attribute['value'] : '';
                 }
             }
 
@@ -390,7 +407,7 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
             $inventory      = isset( $meta['inventory'] ) ? $meta['inventory'] : array();
             $shipping       = isset( $meta['shipping'] ) ? $meta['shipping'] : array();
             $taxes          = isset( $meta['taxes'] ) ? $meta['taxes'] : array();
-            $price          = isset( $pricing['price'] ) && '' !== $pricing['price'] ? $pricing['price'] : ( isset( $pricing['regular_price'] ) ? $pricing['regular_price'] : '' );
+            $price          = $this->determine_variant_price( $pricing );
             $compare_at     = $this->determine_compare_at_price( $pricing );
             $quantity       = isset( $inventory['stock_quantity'] ) ? $inventory['stock_quantity'] : null;
             $manage_stock   = isset( $inventory['manage_stock'] ) ? $inventory['manage_stock'] : false;
@@ -401,12 +418,17 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
             $requires_ship  = isset( $meta['requires_shipping'] ) ? $meta['requires_shipping'] : true;
             $tax_status     = isset( $taxes['status'] ) ? $taxes['status'] : 'taxable';
             $weight_unit    = get_option( 'woocommerce_weight_unit', 'kg' );
-            $inventory_qty  = null !== $quantity ? (float) $quantity : '';
-            $inventory_qty  = '' === $inventory_qty ? '' : wc_stock_amount( $inventory_qty );
+            $inventory_qty  = null !== $quantity ? (float) $quantity : 0;
+            $inventory_qty  = wc_stock_amount( $inventory_qty );
+            if ( ! $manage_stock && ( null === $quantity || '' === $quantity ) ) {
+                $inventory_qty = 0;
+            }
             $inventory_pol  = $this->map_inventory_policy( $backorders );
             $inventory_track = $manage_stock ? 'shopify' : '';
             $requires_value = $requires_ship ? 'TRUE' : 'FALSE';
-            $taxable_value  = 'none' === $tax_status ? 'FALSE' : 'TRUE';
+            $tax_enabled    = isset( $taxes['enabled'] ) ? (bool) $taxes['enabled'] : wc_tax_enabled();
+            $taxable_value  = ( $tax_enabled && 'none' !== $tax_status ) ? 'TRUE' : 'FALSE';
+            $sku            = $this->resolve_variant_sku( $sku, $meta, $product_data, $used_skus, $position );
 
             $row = array(
                 'Handle'                => $product_data['handle'],
@@ -454,6 +476,434 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
         }
 
         /**
+         * Flattens variation metadata using a cartesian expansion of option values.
+         *
+         * @param array $variation_meta   Variation metadata entries.
+         * @param array $option_definitions Shopify option definitions.
+         * @param array $product_data     Normalized product data.
+         *
+         * @return array
+         */
+        protected function flatten_variation_meta( array $variation_meta, array $option_definitions, array $product_data ) {
+            if ( empty( $variation_meta ) || empty( $option_definitions ) ) {
+                return $variation_meta;
+            }
+
+            $value_sets   = $this->collect_variant_value_sets( $variation_meta, $option_definitions, $product_data );
+            $combinations = $this->build_cartesian_attribute_sets( $value_sets, $option_definitions );
+            $meta_index   = array();
+
+            foreach ( $variation_meta as $meta ) {
+                $signature = $this->build_variant_signature_from_meta( $meta, $option_definitions );
+
+                if ( '' === $signature ) {
+                    $signature = 'variant::' . ( isset( $meta['id'] ) ? (int) $meta['id'] : uniqid( 'variant', true ) );
+                }
+
+                if ( ! isset( $meta_index[ $signature ] ) ) {
+                    $meta_index[ $signature ] = $meta;
+                }
+            }
+
+            $flattened       = array();
+            $consumed_signatures = array();
+
+            foreach ( $combinations as $attributes_map ) {
+                $signature = $this->build_variant_signature_from_attributes_map( $attributes_map, $option_definitions );
+
+                if ( isset( $meta_index[ $signature ] ) ) {
+                    $meta                       = $meta_index[ $signature ];
+                    $meta['attributes']         = array_values( array_filter( $attributes_map ) );
+                    $flattened[]                = $meta;
+                    $consumed_signatures[ $signature ] = true;
+                }
+            }
+
+            foreach ( $meta_index as $signature => $meta ) {
+                if ( isset( $consumed_signatures[ $signature ] ) ) {
+                    continue;
+                }
+
+                $flattened[] = $meta;
+            }
+
+            return $flattened;
+        }
+
+        /**
+         * Collects unique attribute values for option definitions.
+         *
+         * @param array $variation_meta   Variation metadata entries.
+         * @param array $option_definitions Shopify option definitions.
+         * @param array $product_data     Normalized product data.
+         *
+         * @return array
+         */
+        protected function collect_variant_value_sets( array $variation_meta, array $option_definitions, array $product_data ) {
+            $sets = array();
+
+            foreach ( $option_definitions as $definition ) {
+                $slug         = isset( $definition['slug'] ) ? $definition['slug'] : '';
+                $sets[ $slug ] = array();
+            }
+
+            foreach ( $variation_meta as $meta ) {
+                $attributes = isset( $meta['attributes'] ) ? $meta['attributes'] : array();
+
+                foreach ( $attributes as $attribute ) {
+                    $slug = isset( $attribute['slug'] ) ? $attribute['slug'] : '';
+
+                    if ( '' === $slug || ! isset( $sets[ $slug ] ) ) {
+                        continue;
+                    }
+
+                    $key = $this->variant_value_key( $slug, $attribute );
+
+                    if ( '' === $key ) {
+                        continue;
+                    }
+
+                    $sets[ $slug ][ $key ] = $attribute;
+                }
+            }
+
+            if ( ! empty( $product_data['attributes'] ) ) {
+                foreach ( (array) $product_data['attributes'] as $attribute ) {
+                    if ( empty( $attribute['variation'] ) ) {
+                        continue;
+                    }
+
+                    $slug = wc_variation_attribute_name( isset( $attribute['slug'] ) ? $attribute['slug'] : '' );
+
+                    if ( '' === $slug || ! isset( $sets[ $slug ] ) ) {
+                        continue;
+                    }
+
+                    foreach ( (array) $attribute['options'] as $option ) {
+                        $entry = array(
+                            'slug'       => $slug,
+                            'value'      => $option,
+                            'value_slug' => sanitize_title( $option ),
+                        );
+
+                        $key = $this->variant_value_key( $slug, $entry );
+
+                        if ( '' === $key ) {
+                            continue;
+                        }
+
+                        if ( ! isset( $sets[ $slug ][ $key ] ) ) {
+                            $sets[ $slug ][ $key ] = $entry;
+                        }
+                    }
+                }
+            }
+
+            foreach ( $sets as $slug => $values ) {
+                if ( ! empty( $values ) ) {
+                    continue;
+                }
+
+                if ( 'title' === $slug ) {
+                    $sets[ $slug ]['title::default'] = array(
+                        'slug'       => 'title',
+                        'value'      => __( 'Default Title', 'woo-to-shopify-exporter' ),
+                        'value_slug' => 'default',
+                    );
+                } else {
+                    $sets[ $slug ][ $slug . '::' ] = array(
+                        'slug'       => $slug,
+                        'value'      => '',
+                        'value_slug' => '',
+                    );
+                }
+            }
+
+            return $sets;
+        }
+
+        /**
+         * Produces a cartesian product of attribute sets keyed by option slug.
+         *
+         * @param array $value_sets        Attribute value sets keyed by slug.
+         * @param array $option_definitions Shopify option definitions.
+         *
+         * @return array
+         */
+        protected function build_cartesian_attribute_sets( array $value_sets, array $option_definitions ) {
+            $combinations = array( array() );
+
+            foreach ( $option_definitions as $definition ) {
+                $slug   = isset( $definition['slug'] ) ? $definition['slug'] : '';
+                $values = isset( $value_sets[ $slug ] ) ? array_values( $value_sets[ $slug ] ) : array();
+
+                if ( empty( $values ) ) {
+                    $values = array(
+                        array(
+                            'slug'       => $slug,
+                            'value'      => '',
+                            'value_slug' => '',
+                        ),
+                    );
+                }
+
+                $next = array();
+
+                foreach ( $combinations as $combination ) {
+                    foreach ( $values as $value ) {
+                        $candidate          = $combination;
+                        $candidate[ $slug ] = $value;
+                        $next[]             = $candidate;
+                    }
+                }
+
+                $combinations = $next;
+            }
+
+            return $combinations;
+        }
+
+        /**
+         * Builds a signature for variation metadata.
+         *
+         * @param array $meta               Variation metadata entry.
+         * @param array $option_definitions Shopify option definitions.
+         *
+         * @return string
+         */
+        protected function build_variant_signature_from_meta( array $meta, array $option_definitions ) {
+            $attributes   = isset( $meta['attributes'] ) ? $meta['attributes'] : array();
+            $attributes_map = array();
+
+            foreach ( $attributes as $attribute ) {
+                if ( empty( $attribute['slug'] ) ) {
+                    continue;
+                }
+
+                $attributes_map[ $attribute['slug'] ] = $attribute;
+            }
+
+            return $this->build_variant_signature_from_attributes_map( $attributes_map, $option_definitions );
+        }
+
+        /**
+         * Builds a signature from an attribute map keyed by option slug.
+         *
+         * @param array $attributes_map     Attribute map keyed by slug.
+         * @param array $option_definitions Shopify option definitions.
+         *
+         * @return string
+         */
+        protected function build_variant_signature_from_attributes_map( array $attributes_map, array $option_definitions ) {
+            $parts = array();
+
+            foreach ( $option_definitions as $definition ) {
+                $slug = isset( $definition['slug'] ) ? $definition['slug'] : '';
+
+                if ( '' === $slug ) {
+                    continue;
+                }
+
+                if ( isset( $attributes_map[ $slug ] ) && is_array( $attributes_map[ $slug ] ) ) {
+                    $parts[] = $this->variant_value_key( $slug, $attributes_map[ $slug ] );
+                } else {
+                    $parts[] = strtolower( $slug . '::' );
+                }
+            }
+
+            return implode( '|', $parts );
+        }
+
+        /**
+         * Generates a normalized key for a variant attribute value.
+         *
+         * @param string $slug      Attribute slug.
+         * @param array  $attribute Attribute data.
+         *
+         * @return string
+         */
+        protected function variant_value_key( $slug, array $attribute ) {
+            if ( '' === $slug ) {
+                return '';
+            }
+
+            $value_slug = isset( $attribute['value_slug'] ) ? $attribute['value_slug'] : '';
+            $value      = isset( $attribute['value'] ) ? $attribute['value'] : '';
+            $normalized = '' !== $value_slug ? $value_slug : $value;
+            $normalized = sanitize_title( (string) $normalized );
+
+            return strtolower( $slug . '::' . $normalized );
+        }
+
+        /**
+         * Resolves a SKU ensuring uniqueness and fallbacks when absent.
+         *
+         * @param string $sku         Original SKU value.
+         * @param array  $meta        Variation metadata entry.
+         * @param array  $product_data Normalized product data.
+         * @param array  $used_skus   Registry of used SKUs.
+         * @param int    $position    Variant index.
+         *
+         * @return string
+         */
+        protected function resolve_variant_sku( $sku, array $meta, array $product_data, array &$used_skus, $position ) {
+            $sku = trim( (string) $sku );
+
+            if ( '' !== $sku ) {
+                return $this->ensure_unique_sku( $sku, $used_skus );
+            }
+
+            $fallback = $this->generate_fallback_sku( $meta, $product_data, $position, $used_skus );
+
+            return $this->ensure_unique_sku( $fallback, $used_skus );
+        }
+
+        /**
+         * Ensures a SKU is unique by appending counters when necessary.
+         *
+         * @param string $candidate SKU candidate.
+         * @param array  $used_skus Registry of used SKUs.
+         *
+         * @return string
+         */
+        protected function ensure_unique_sku( $candidate, array &$used_skus ) {
+            $candidate  = '' !== $candidate ? $candidate : 'SKU';
+            $normalized = strtolower( $candidate );
+
+            if ( ! isset( $used_skus[ $normalized ] ) ) {
+                $used_skus[ $normalized ] = 1;
+
+                return $candidate;
+            }
+
+            $count       = $used_skus[ $normalized ];
+            $base        = $candidate;
+            $final       = $candidate;
+            $final_lower = $normalized;
+
+            do {
+                $count++;
+                $final       = $base . '-' . $count;
+                $final_lower = strtolower( $final );
+            } while ( isset( $used_skus[ $final_lower ] ) );
+
+            $used_skus[ $normalized ]  = $count;
+            $used_skus[ $final_lower ] = 1;
+
+            return $final;
+        }
+
+        /**
+         * Generates a fallback SKU from product and attribute context.
+         *
+         * @param array $meta         Variation metadata entry.
+         * @param array $product_data Normalized product data.
+         * @param int   $position     Variant index (zero based).
+         * @param array $used_skus    Registry of used SKUs.
+         *
+         * @return string
+         */
+        protected function generate_fallback_sku( array $meta, array $product_data, $position, array $used_skus ) {
+            $handle = isset( $product_data['handle'] ) ? $product_data['handle'] : '';
+            $base   = $this->normalize_sku_segment( $handle );
+
+            if ( '' === $base ) {
+                $base = 'PRODUCT';
+            }
+
+            $attribute_parts = array();
+
+            if ( ! empty( $meta['attributes'] ) ) {
+                foreach ( (array) $meta['attributes'] as $attribute ) {
+                    $value = '';
+
+                    if ( isset( $attribute['value_slug'] ) && '' !== $attribute['value_slug'] ) {
+                        $value = $attribute['value_slug'];
+                    } elseif ( isset( $attribute['value'] ) ) {
+                        $value = $attribute['value'];
+                    }
+
+                    $segment = $this->normalize_sku_segment( $value );
+
+                    if ( '' !== $segment ) {
+                        $attribute_parts[] = $segment;
+                    }
+                }
+            }
+
+            if ( empty( $attribute_parts ) ) {
+                $attribute_parts[] = str_pad( (string) ( $position + 1 ), 3, '0', STR_PAD_LEFT );
+            }
+
+            $candidate = $base . '-' . implode( '-', $attribute_parts );
+            $candidate = trim( $candidate, '-' );
+
+            if ( '' === $candidate ) {
+                $candidate = 'SKU-' . str_pad( (string) ( $position + 1 ), 3, '0', STR_PAD_LEFT );
+            }
+
+            return $candidate;
+        }
+
+        /**
+         * Normalizes a string segment for SKU composition.
+         *
+         * @param string $value Raw segment value.
+         *
+         * @return string
+         */
+        protected function normalize_sku_segment( $value ) {
+            $value = (string) $value;
+            $value = preg_replace( '/[^\p{L}\p{N}]+/u', '-', $value );
+            $value = trim( $value, '-' );
+
+            return strtoupper( $value );
+        }
+
+        /**
+         * Splits variation attributes into Shopify option columns and overflow entries.
+         *
+         * @param array $attributes         Attribute list from the variation meta.
+         * @param array $option_definitions Option definitions selected for Shopify.
+         *
+         * @return array
+         */
+        protected function partition_variant_attributes( array $attributes, array $option_definitions ) {
+            $primary = array();
+            $extra   = array();
+
+            $allowed = array();
+
+            foreach ( $option_definitions as $definition ) {
+                if ( empty( $definition['slug'] ) ) {
+                    continue;
+                }
+
+                $allowed[] = $definition['slug'];
+            }
+
+            foreach ( $attributes as $attribute ) {
+                if ( empty( $attribute['slug'] ) ) {
+                    continue;
+                }
+
+                $slug  = $attribute['slug'];
+                $value = isset( $attribute['value'] ) ? $attribute['value'] : '';
+
+                if ( in_array( $slug, $allowed, true ) ) {
+                    $primary[ $slug ] = $value;
+                } else {
+                    $extra[] = $attribute;
+                }
+            }
+
+            return array(
+                'primary' => $primary,
+                'extra'   => $extra,
+            );
+        }
+
+        /**
          * Builds Shopify image rows for a product.
          *
          * @param array $data Normalized product data.
@@ -493,6 +943,185 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
             }
 
             return $rows;
+        }
+
+        /**
+         * Normalizes a tag label for multilingual catalogs.
+         *
+         * @param string $label Raw label.
+         *
+         * @return string
+         */
+        protected function normalize_tag_label( $label ) {
+            $label = $this->decode_text( $label );
+            $label = str_replace( array( '،', '؛', ';' ), ',', $label );
+            $label = preg_replace( '/\s+/u', ' ', $label );
+            $label = trim( $label );
+            $label = trim( $label, ',' );
+
+            return $label;
+        }
+
+        /**
+         * Formats product tags for Shopify CSV output.
+         *
+         * @param array $data Product data payload.
+         *
+         * @return string
+         */
+        protected function format_shopify_tags( array $data ) {
+            $tag_values = array();
+
+            if ( ! empty( $data['tags'] ) && is_array( $data['tags'] ) ) {
+                foreach ( $data['tags'] as $tag ) {
+                    if ( empty( $tag['name'] ) ) {
+                        continue;
+                    }
+
+                    $tag_values[] = $this->normalize_tag_label( $tag['name'] );
+                }
+            }
+
+            if ( ! empty( $data['extra_tags'] ) && is_array( $data['extra_tags'] ) ) {
+                foreach ( $data['extra_tags'] as $tag ) {
+                    $tag_values[] = $this->normalize_tag_label( $tag );
+                }
+            }
+
+            $tag_values = array_values( array_unique( array_filter( $tag_values ) ) );
+
+            return implode( ', ', $tag_values );
+        }
+
+        /**
+         * Builds a hierarchical product category string for Shopify.
+         *
+         * @param array $categories Category list.
+         *
+         * @return string
+         */
+        protected function build_product_category_path( array $categories ) {
+            $primary = $this->select_primary_category( $categories );
+
+            if ( ! $primary ) {
+                return '';
+            }
+
+            $chain_ids = array();
+
+            if ( ! empty( $primary['ancestors'] ) && is_array( $primary['ancestors'] ) ) {
+                $chain_ids = array_merge( array_reverse( $primary['ancestors'] ), array( $primary['id'] ) );
+            } else {
+                $chain_ids = array( $primary['id'] );
+            }
+
+            $names = array();
+
+            foreach ( $chain_ids as $term_id ) {
+                $term = get_term( $term_id, 'product_cat' );
+
+                if ( $term && ! is_wp_error( $term ) ) {
+                    $names[] = $this->decode_text( $term->name );
+                }
+            }
+
+            if ( empty( $names ) ) {
+                $names[] = $primary['name'];
+            }
+
+            return implode( ' > ', array_filter( array_unique( $names ) ) );
+        }
+
+        /**
+         * Selects the primary category for a product.
+         *
+         * @param array $categories Category list.
+         *
+         * @return array|null
+         */
+        protected function select_primary_category( array $categories ) {
+            if ( empty( $categories ) ) {
+                return null;
+            }
+
+            usort(
+                $categories,
+                function ( $a, $b ) {
+                    $a_parent = isset( $a['parent'] ) ? (int) $a['parent'] : 0;
+                    $b_parent = isset( $b['parent'] ) ? (int) $b['parent'] : 0;
+
+                    if ( $a_parent && ! $b_parent ) {
+                        return 1;
+                    }
+
+                    if ( $b_parent && ! $a_parent ) {
+                        return -1;
+                    }
+
+                    $a_depth = isset( $a['ancestors'] ) ? count( (array) $a['ancestors'] ) : 0;
+                    $b_depth = isset( $b['ancestors'] ) ? count( (array) $b['ancestors'] ) : 0;
+
+                    if ( $a_depth !== $b_depth ) {
+                        return $a_depth - $b_depth;
+                    }
+
+                    return strcmp( $a['name'], $b['name'] );
+                }
+            );
+
+            return $categories[0];
+        }
+
+        /**
+         * Determines the Shopify product type label.
+         *
+         * @param array $data Product data payload.
+         *
+         * @return string
+         */
+        protected function determine_shopify_type( array $data ) {
+            $attributes = isset( $data['attributes'] ) ? $data['attributes'] : array();
+            $type_value = $this->locate_product_type_attribute_value( $attributes );
+
+            if ( '' !== $type_value ) {
+                return $type_value;
+            }
+
+            $primary_category = $this->select_primary_category( isset( $data['categories'] ) ? $data['categories'] : array() );
+
+            if ( $primary_category ) {
+                return $primary_category['name'];
+            }
+
+            return $this->get_product_type_label( isset( $data['type'] ) ? $data['type'] : 'simple' );
+        }
+
+        /**
+         * Attempts to read a custom product type attribute.
+         *
+         * @param array $attributes Product attributes.
+         *
+         * @return string
+         */
+        protected function locate_product_type_attribute_value( array $attributes ) {
+            if ( empty( $attributes ) ) {
+                return '';
+            }
+
+            $target_slugs = array( 'product-type', 'product_type', 'product type', 'نوع-المنتج', 'نوع المنتج', 'producttype' );
+
+            foreach ( $attributes as $attribute ) {
+                $slug = isset( $attribute['slug'] ) ? sanitize_title( $attribute['slug'] ) : '';
+                $name = isset( $attribute['name'] ) ? sanitize_title( $attribute['name'] ) : '';
+
+                if ( in_array( $slug, $target_slugs, true ) || in_array( $name, $target_slugs, true ) ) {
+                    if ( ! empty( $attribute['options'] ) ) {
+                        return $this->decode_text( $attribute['options'][0] );
+                    }
+                }
+            }
+
+            return '';
         }
 
         /**
@@ -568,7 +1197,13 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
          * @return string
          */
         protected function build_seo_title( array $data ) {
-            $title = isset( $data['name'] ) ? $data['name'] : '';
+            $title = '';
+
+            if ( ! empty( $data['seo']['title'] ) ) {
+                $title = $data['seo']['title'];
+            } elseif ( isset( $data['name'] ) ) {
+                $title = $data['name'];
+            }
 
             return $this->truncate_text( $title, 70 );
         }
@@ -581,9 +1216,13 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
          * @return string
          */
         protected function build_seo_description( array $data ) {
-            $description = isset( $data['short_description'] ) && '' !== $data['short_description']
-                ? $data['short_description']
-                : ( isset( $data['description_html'] ) ? $data['description_html'] : '' );
+            if ( ! empty( $data['seo']['description'] ) ) {
+                $description = $data['seo']['description'];
+            } else {
+                $description = isset( $data['short_description'] ) && '' !== $data['short_description']
+                    ? $data['short_description']
+                    : ( isset( $data['description_html'] ) ? wp_strip_all_tags( $data['description_html'] ) : '' );
+            }
 
             return $this->truncate_text( $description, 320 );
         }
@@ -701,11 +1340,63 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
                 return '';
             }
 
-            if ( (float) $sale > 0 && (float) $regular > (float) $sale ) {
+            if ( $this->is_sale_price_active( $pricing ) && (float) $regular > (float) $sale ) {
                 return $regular;
             }
 
             return '';
+        }
+
+        /**
+         * Resolves the effective variant price based on sale windows.
+         *
+         * @param array $pricing Pricing data.
+         *
+         * @return string
+         */
+        protected function determine_variant_price( array $pricing ) {
+            $price   = isset( $pricing['price'] ) ? $pricing['price'] : '';
+            $regular = isset( $pricing['regular_price'] ) ? $pricing['regular_price'] : '';
+            $sale    = isset( $pricing['sale_price'] ) ? $pricing['sale_price'] : '';
+
+            if ( $this->is_sale_price_active( $pricing ) && '' !== $sale ) {
+                return $sale;
+            }
+
+            if ( '' !== $price ) {
+                return $price;
+            }
+
+            return $regular;
+        }
+
+        /**
+         * Determines whether a sale price is currently active.
+         *
+         * @param array $pricing Pricing data.
+         *
+         * @return bool
+         */
+        protected function is_sale_price_active( array $pricing ) {
+            $sale = isset( $pricing['sale_price'] ) ? $pricing['sale_price'] : '';
+
+            if ( '' === $sale ) {
+                return false;
+            }
+
+            $start = isset( $pricing['sale_start'] ) ? (int) $pricing['sale_start'] : null;
+            $end   = isset( $pricing['sale_end'] ) ? (int) $pricing['sale_end'] : null;
+            $now   = function_exists( 'current_time' ) ? (int) current_time( 'timestamp' ) : time();
+
+            if ( null !== $start && $start > 0 && $now < $start ) {
+                return false;
+            }
+
+            if ( null !== $end && $end > 0 && $now > $end ) {
+                return false;
+            }
+
+            return true;
         }
 
         /**
@@ -719,14 +1410,13 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
         protected function base_product_data( WC_Product $product, $parent = null ) {
             $source_product = $parent instanceof WC_Product ? $parent : $product;
 
-            $brand  = $this->get_brand( $product, $parent );
-            $images = $this->collect_images( $product, $parent );
-
-            $handle = $product->get_slug();
-
-            if ( '' === $handle ) {
-                $handle = sanitize_title( $product->get_name() );
-            }
+            $brand        = $this->get_brand( $product, $parent );
+            $images       = $this->collect_images( $product, $parent );
+            $handle       = $this->normalize_handle( $product->get_slug(), $product->get_name() );
+            $description  = $this->clean_description_html( $product->get_description() );
+            $short_desc   = $this->clean_short_description( $product->get_short_description() );
+            $attributes   = $this->collect_product_attributes( $source_product );
+            $seo          = $this->collect_seo_data( $source_product->get_id() );
 
             return array(
                 'id'                => (int) $product->get_id(),
@@ -737,8 +1427,8 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
                 'handle'            => $handle,
                 'slug'              => $product->get_slug(),
                 'permalink'         => $product->get_permalink(),
-                'description_html'  => $this->decode_text( $product->get_description() ),
-                'short_description' => $this->decode_text( $product->get_short_description() ),
+                'description_html'  => $description,
+                'short_description' => $short_desc,
                 'brand'             => $brand,
                 'categories'        => $this->collect_terms( $source_product->get_id(), 'product_cat' ),
                 'tags'              => $this->collect_terms( $source_product->get_id(), 'product_tag' ),
@@ -748,6 +1438,8 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
                 'inventory'         => $this->collect_inventory_data( $product, $parent ),
                 'shipping'          => $this->collect_shipping_data( $product, $parent ),
                 'requires_shipping' => $product->needs_shipping(),
+                'attributes'        => $attributes,
+                'seo'               => $seo,
                 'locale'            => $this->current_locale(),
                 'created_at'        => $product->get_date_created() ? $product->get_date_created()->getTimestamp() : null,
                 'updated_at'        => $product->get_date_modified() ? $product->get_date_modified()->getTimestamp() : null,
@@ -864,6 +1556,49 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
         }
 
         /**
+         * Collects a product's attribute definitions.
+         *
+         * @param WC_Product $product Product instance.
+         *
+         * @return array
+         */
+        protected function collect_product_attributes( WC_Product $product ) {
+            $attributes = array();
+
+            foreach ( $product->get_attributes() as $attribute ) {
+                if ( ! $attribute instanceof WC_Product_Attribute ) {
+                    continue;
+                }
+
+                $slug  = sanitize_title( $attribute->get_name() );
+                $label = $this->decode_text( wc_attribute_label( $attribute->get_name() ) );
+                $options = array();
+
+                if ( $attribute->is_taxonomy() ) {
+                    $option_terms = wc_get_product_terms( $product->get_id(), $attribute->get_name(), array( 'fields' => 'names' ) );
+                    if ( ! is_wp_error( $option_terms ) ) {
+                        foreach ( $option_terms as $option ) {
+                            $options[] = $this->decode_text( $option );
+                        }
+                    }
+                } else {
+                    foreach ( (array) $attribute->get_options() as $option ) {
+                        $options[] = $this->decode_text( $option );
+                    }
+                }
+
+                $attributes[] = array(
+                    'slug'      => $slug,
+                    'name'      => $label,
+                    'options'   => array_values( array_unique( array_filter( $options ) ) ),
+                    'variation' => (bool) $attribute->get_variation(),
+                );
+            }
+
+            return $attributes;
+        }
+
+        /**
          * Collects taxonomy terms for a given product.
          *
          * @param int    $product_id Product ID.
@@ -888,6 +1623,8 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
                         'id'   => (int) $term->term_id,
                         'name' => $this->decode_text( $term->name ),
                         'slug' => $term->slug,
+                        'parent'    => (int) $term->parent,
+                        'ancestors' => array_map( 'intval', get_ancestors( $term->term_id, $term->taxonomy ) ),
                     );
                 },
                 $terms
@@ -1075,6 +1812,29 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
         }
 
         /**
+         * Collects SEO metadata from popular plugins.
+         *
+         * @param int $product_id Product ID.
+         *
+         * @return array
+         */
+        protected function collect_seo_data( $product_id ) {
+            $product_id  = (int) $product_id;
+            $rank_title  = $product_id ? get_post_meta( $product_id, 'rank_math_title', true ) : '';
+            $rank_desc   = $product_id ? get_post_meta( $product_id, 'rank_math_description', true ) : '';
+            $yoast_title = $product_id ? get_post_meta( $product_id, '_yoast_wpseo_title', true ) : '';
+            $yoast_desc  = $product_id ? get_post_meta( $product_id, '_yoast_wpseo_metadesc', true ) : '';
+
+            $title = '' !== $rank_title ? $rank_title : $yoast_title;
+            $desc  = '' !== $rank_desc ? $rank_desc : $yoast_desc;
+
+            return array(
+                'title'       => $this->decode_text( wp_strip_all_tags( $title ) ),
+                'description' => $this->decode_text( wp_strip_all_tags( $desc ) ),
+            );
+        }
+
+        /**
          * Determines brand information using taxonomies or custom attributes.
          *
          * @param WC_Product      $product Product instance.
@@ -1209,6 +1969,137 @@ if ( ! class_exists( 'WSE_WooCommerce_Product_Source' ) ) {
          */
         protected function decode_text( $text ) {
             return html_entity_decode( (string) $text, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+        }
+
+        /**
+         * Provides cleaned HTML without inline styles or scripts.
+         *
+         * @param string $html Raw HTML content.
+         *
+         * @return string
+         */
+        protected function clean_description_html( $html ) {
+            $html = $this->decode_text( $html );
+
+            if ( '' === trim( $html ) ) {
+                return '';
+            }
+
+            if ( class_exists( 'DOMDocument' ) ) {
+                $document = new DOMDocument();
+                $previous = libxml_use_internal_errors( true );
+                $document->loadHTML( '<?xml encoding="utf-8" ?><div>' . $html . '</div>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD );
+                libxml_clear_errors();
+                libxml_use_internal_errors( $previous );
+
+                $this->remove_dom_nodes( $document, array( 'script', 'style' ) );
+                $this->strip_dom_attributes( $document );
+
+                $wrapper = $document->getElementsByTagName( 'div' )->item( 0 );
+                $output  = '';
+
+                if ( $wrapper ) {
+                    foreach ( $wrapper->childNodes as $child ) {
+                        $output .= $document->saveHTML( $child );
+                    }
+                }
+
+                return trim( $output );
+            }
+
+            $html = preg_replace( '#<script(.*?)>(.*?)</script>#is', '', $html );
+            $html = preg_replace( '#<style(.*?)>(.*?)</style>#is', '', $html );
+            $html = preg_replace( '/\sstyle=(\"|\')[^\"\']*\1/i', '', $html );
+            $html = preg_replace( '/\son[a-z]+=(\"|\')[^\"\']*\1/i', '', $html );
+
+            return trim( $html );
+        }
+
+        /**
+         * Cleans a short description into plain text.
+         *
+         * @param string $text Raw text.
+         *
+         * @return string
+         */
+        protected function clean_short_description( $text ) {
+            $text = wp_strip_all_tags( $this->decode_text( $text ) );
+            $text = preg_replace( '/\s+/u', ' ', $text );
+
+            return trim( $text );
+        }
+
+        /**
+         * Normalizes product handles preserving UTF-8 characters.
+         *
+         * @param string $slug    Base slug.
+         * @param string $fallback_name Product name fallback.
+         *
+         * @return string
+         */
+        protected function normalize_handle( $slug, $fallback_name ) {
+            $handle = $this->decode_text( $slug );
+
+            if ( '' === $handle ) {
+                $handle = sanitize_title( $fallback_name );
+            }
+
+            $handle = strtolower( $handle );
+            $handle = preg_replace( '/[\s_]+/u', '-', $handle );
+            $handle = preg_replace( '/[^\p{L}\p{N}\-]+/u', '-', $handle );
+            $handle = preg_replace( '/-+/u', '-', $handle );
+            $handle = trim( $handle, '-' );
+
+            if ( '' === $handle ) {
+                $handle = sanitize_title( $fallback_name );
+            }
+
+            return $handle;
+        }
+
+        /**
+         * Removes disallowed DOM nodes from a document.
+         *
+         * @param DOMDocument $document DOMDocument instance.
+         * @param array       $tags     Tags to remove.
+         */
+        protected function remove_dom_nodes( DOMDocument $document, array $tags ) {
+            $xpath = new DOMXPath( $document );
+
+            foreach ( $tags as $tag ) {
+                foreach ( $xpath->query( '//' . $tag ) as $node ) {
+                    $node->parentNode->removeChild( $node );
+                }
+            }
+        }
+
+        /**
+         * Strips inline style and event attributes from a DOMDocument.
+         *
+         * @param DOMDocument $document DOMDocument instance.
+         */
+        protected function strip_dom_attributes( DOMDocument $document ) {
+            $xpath = new DOMXPath( $document );
+
+            foreach ( $xpath->query( '//*' ) as $node ) {
+                if ( ! $node->hasAttributes() ) {
+                    continue;
+                }
+
+                $remove = array();
+
+                foreach ( iterator_to_array( $node->attributes ) as $attribute ) {
+                    $name = strtolower( $attribute->name );
+
+                    if ( 'style' === $name || 0 === strpos( $name, 'on' ) ) {
+                        $remove[] = $name;
+                    }
+                }
+
+                foreach ( $remove as $name ) {
+                    $node->removeAttribute( $name );
+                }
+            }
         }
 
         /**
