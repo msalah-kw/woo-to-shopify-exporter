@@ -561,12 +561,24 @@ function wse_ajax_start_export() {
     );
 
     wse_store_active_job( $job );
+    $result = wse_run_export_job( $job );
+
+    if ( is_wp_error( $result ) ) {
+        $stored_job = wse_get_active_job();
+
+        wp_send_json_error(
+            array(
+                'message' => $result->get_error_message(),
+                'job'     => $stored_job,
+            )
+        );
+    }
 
     wp_send_json_success(
         array(
-            'job'      => $job,
+            'job'      => $result,
             'settings' => $settings,
-            'notice'   => __( 'Export request registered successfully.', 'woo-to-shopify-exporter' ),
+            'notice'   => isset( $result['message'] ) ? $result['message'] : __( 'Export completed successfully.', 'woo-to-shopify-exporter' ),
         )
     );
 }
@@ -616,10 +628,23 @@ function wse_ajax_resume_export() {
 
     wse_store_active_job( $job );
 
+    $result = wse_run_export_job( $job );
+
+    if ( is_wp_error( $result ) ) {
+        $stored_job = wse_get_active_job();
+
+        wp_send_json_error(
+            array(
+                'message' => $result->get_error_message(),
+                'job'     => $stored_job,
+            )
+        );
+    }
+
     wp_send_json_success(
         array(
-            'job'    => $job,
-            'notice' => __( 'Export job resumed successfully.', 'woo-to-shopify-exporter' ),
+            'job'    => $result,
+            'notice' => isset( $result['message'] ) ? $result['message'] : __( 'Export job resumed successfully.', 'woo-to-shopify-exporter' ),
         )
     );
 }
